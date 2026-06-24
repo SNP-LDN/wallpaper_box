@@ -11,7 +11,7 @@ const elements = {
   newCollectionInput: document.querySelector('#new-collection-input'), createFromDialog: document.querySelector('#create-from-dialog'),
   layoutColumns: document.querySelector('#layout-columns'), sideNav: document.querySelector('#side-nav'), sidebarCollections: document.querySelector('#sidebar-collections'),
   manageDialog: document.querySelector('#manage-collections-dialog'), manageList: document.querySelector('#manage-collection-list'), manageInput: document.querySelector('#manage-collection-input'), manageCreate: document.querySelector('#manage-create-collection')
-  , manageBlur: document.querySelector('#manage-collection-blur'), applyBlur: document.querySelector('#apply-blur'), search: document.querySelector('#search-wallpapers'), openSettings: document.querySelector('#open-settings'), settingsDialog: document.querySelector('#settings-dialog'), background: document.querySelector('#setting-background'), theme: document.querySelector('#setting-theme'), opacity: document.querySelector('#setting-opacity'), fontSize: document.querySelector('#setting-font-size'), chooseBackground: document.querySelector('#choose-background'), backgroundLabel: document.querySelector('#background-label'), chooseBgm: document.querySelector('#choose-bgm'), chooseFont: document.querySelector('#choose-font'), bgmLabel: document.querySelector('#bgm-label'), fontLabel: document.querySelector('#font-label'), stopBgm: document.querySelector('#stop-bgm'), resetSettings: document.querySelector('#reset-settings')
+  , manageBlur: document.querySelector('#manage-collection-blur'), applyBlur: document.querySelector('#apply-blur'), search: document.querySelector('#search-wallpapers'), openSettings: document.querySelector('#open-settings'), settingsDialog: document.querySelector('#settings-dialog'), background: document.querySelector('#setting-background'), theme: document.querySelector('#setting-theme'), opacity: document.querySelector('#setting-opacity'), fontSize: document.querySelector('#setting-font-size'), chooseBackground: document.querySelector('#choose-background'), backgroundLabel: document.querySelector('#background-label'), chooseBgm: document.querySelector('#choose-bgm'), chooseFont: document.querySelector('#choose-font'), bgmLabel: document.querySelector('#bgm-label'), fontLabel: document.querySelector('#font-label'), stopBgm: document.querySelector('#stop-bgm'), resetSettings: document.querySelector('#reset-settings'), openUserGuide: document.querySelector('#open-user-guide'), userGuideDialog: document.querySelector('#user-guide-dialog'), guideContent: document.querySelector('#guide-content')
 };
 let rootPath = null;
 let pendingWallpaper = null;
@@ -20,6 +20,7 @@ let collections = [];
 let collectionWallpaper = null;
 let customization = {};
 let bgm = new Audio();
+let userGuideLoaded = false;
 
 function showMessage(message) { elements.count.textContent = message; }
 
@@ -192,7 +193,30 @@ elements.chooseBackground.onclick = async () => { const file = await api.chooseM
 elements.chooseFont.onclick = async () => { const file = await api.chooseMedia('font'); if (file) { customization.fontPath = file; elements.fontLabel.textContent = '已导入字体'; saveCustomization(); } };
 elements.stopBgm.onclick = () => bgm.pause();
 elements.resetSettings.onclick = async () => { customization = {}; bgm.pause(); await saveCustomization(); elements.background.value = '#101114'; elements.theme.value = '#b6a8ff'; elements.opacity.value = 80; elements.fontSize.value = 16; elements.backgroundLabel.textContent = elements.bgmLabel.textContent = elements.fontLabel.textContent = '未选择'; };
-[elements.dialog, elements.collectionDialog, elements.manageDialog, elements.settingsDialog].forEach((dialog) => {
+function renderInlineMarkdown(text) {
+  return text.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char])
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+}
+function markdownToHtml(markdown) {
+  const lines = markdown.replace(/\r/g, '').split('\n'); let html = ''; let list = null; let code = false; let codeLines = [];
+  const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
+  for (const line of lines) {
+    if (line.startsWith('```')) { if (code) { html += `<pre><code>${renderInlineMarkdown(codeLines.join('\n'))}</code></pre>`; codeLines = []; } code = !code; continue; }
+    if (code) { codeLines.push(line); continue; }
+    if (/^<img\b/i.test(line)) continue;
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    const bullet = line.match(/^[-*]\s+(.+)$/); const numbered = line.match(/^\d+\.\s+(.+)$/);
+    if (heading) { closeList(); html += `<h${heading[1].length}>${renderInlineMarkdown(heading[2])}</h${heading[1].length}>`; }
+    else if (bullet || numbered) { const tag = numbered ? 'ol' : 'ul'; if (list && list !== tag) closeList(); if (!list) { html += `<${tag}>`; list = tag; } html += `<li>${renderInlineMarkdown((bullet || numbered)[1])}</li>`; }
+    else if (!line.trim()) closeList();
+    else { closeList(); html += `<p>${renderInlineMarkdown(line)}</p>`; }
+  }
+  closeList(); return html;
+}
+async function openUserGuide() { if (!userGuideLoaded) { elements.guideContent.innerHTML = markdownToHtml(await api.getUserGuide()); userGuideLoaded = true; } elements.userGuideDialog.showModal(); }
+elements.openUserGuide.onclick = openUserGuide;
+[elements.dialog, elements.collectionDialog, elements.manageDialog, elements.settingsDialog, elements.userGuideDialog].forEach((dialog) => {
   dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
 });
-(async () => { customization = await api.getCustomization(); applyCustomization(); if (customization.bgmPath) { bgm.src = api.toFileUrl(customization.bgmPath); bgm.loop = true; } rootPath = await api.getRoot(); if (rootPath) { elements.path.textContent = rootPath; await refresh(); } else { elements.empty.hidden = false; } })();
+(async () => { customization = await api.getCustomization(); applyCustomization(); if (customization.bgmPath) { bgm.src = api.toFileUrl(customization.bgmPath); bgm.loop = true; } rootPath = await api.getRoot(); if (rootPath) { elements.path.textContent = rootPath; await refresh(); } else { elements.empty.hidden = false; } await openUserGuide(); })();

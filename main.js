@@ -106,6 +106,10 @@ function createWindow() {
       nodeIntegration: false
     }
   });
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
   window.loadFile('renderer/index.html');
 }
 
@@ -198,6 +202,7 @@ app.whenReady().then(() => {
     const result = await dialog.showOpenDialog({ properties: ['openFile'], filters });
     return result.canceled ? null : result.filePaths[0];
   });
+  ipcMain.handle('app:get-user-guide', async () => fs.readFile(path.join(__dirname, 'USER_GUIDE.md'), 'utf8'));
 
   ipcMain.handle('collections:toggle-favorite', async (_event, { rootPath, folderPath }) => {
     if (!isInsideRoot(rootPath, folderPath)) throw new Error('壁纸不属于当前目录。');

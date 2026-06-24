@@ -21,5 +21,6 @@ contextBridge.exposeInMainWorld('wallpaperLibrary', {
   getCustomization: () => ipcRenderer.invoke('app:get-customization'),
   saveCustomization: (data) => ipcRenderer.invoke('app:save-customization', data),
   chooseMedia: (type) => ipcRenderer.invoke('app:choose-media', type),
+  getUserGuide: () => ipcRenderer.invoke('app:get-user-guide'),
   toFileUrl: toLocalFileUrl
 });

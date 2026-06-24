@@ -25,6 +25,7 @@
       "preload.js",
       "renderer/**/*",
       "assets/**/*",
+      "USER_GUIDE.md",
       "package.json"
     ],
     "win": {
