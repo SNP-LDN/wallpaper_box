@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>壁纸盒</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar">
+        <div class="brand"><img class="brand-logo" src="../assets/logo.png" alt="壁纸盒 Logo" /><div><strong>壁纸盒</strong><small>本地壁纸管理</small></div></div>
+        <nav class="side-nav" id="side-nav"><button data-filter="all" class="active">全部壁纸</button><button data-filter="favorite">♥ 喜欢</button><p>我的收藏夹</p><div id="sidebar-collections"></div></nav>
+        <button class="settings-button" id="open-settings">⚙ 设置</button>
+        <div class="sidebar-info"><strong>壁纸盒</strong><span>v1.0.0</span><p>不打开 Wallpaper Engine，也能整理本地残留壁纸。</p><div class="support-links"><a href="https://github.com" target="_blank">GitHub</a><a href="https://afdian.com" target="_blank">爱发电</a><a href="https://space.bilibili.com" target="_blank">其他平台</a></div></div>
+      </aside>
+      <div class="content-area">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">WALLPAPER BOX</p>
+          <h1>壁纸盒</h1>
+          <p class="path" id="library-path">尚未选择文件夹</p>
+        </div>
+        <div class="toolbar">
+          <label class="search-control"><input id="search-wallpapers" type="search" placeholder="搜索壁纸名称" /></label>
+          <label class="sort-control" for="sort-by">排序
+            <select id="sort-by">
+              <option value="time">按修改时间</option>
+              <option value="size">按文件夹大小</option>
+              <option value="name">按文件夹名称</option>
+            </select>
+          </label>
+          <label class="sort-control" for="collection-filter">查看
+            <select id="collection-filter">
+              <option value="all">全部壁纸</option>
+              <option value="favorite">♥ 喜欢</option>
+            </select>
+          </label>
+          <label class="sort-control" for="layout-columns">布局
+            <select id="layout-columns"><option value="auto">自动</option><option value="2">2 列</option><option value="3">3 列</option><option value="4">4 列</option><option value="5">5 列</option><option value="6">6 列</option></select>
+          </label>
+          <label class="sort-control blur-switch"><input type="checkbox" id="apply-blur" checked /> 应用收藏夹模糊</label>
+          <button class="button secondary" id="new-collection">＋ 新建收藏夹</button>
+          <button class="button secondary" id="choose-folder">选择文件夹</button>
+          <button class="button primary" id="refresh">↻ 刷新</button>
+        </div>
+      </header>
+      <section class="status-row">
+        <span id="wallpaper-count">请选择 Wallpaper 的保存目录</span>
+        <span>识别 <code>preview.jpg / .png / .gif</code></span>
+      </section>
+      <section class="wallpaper-grid" id="wallpaper-grid" aria-live="polite"></section>
+      <section class="empty-state" id="empty-state" hidden>
+        <div class="empty-icon">▧</div>
+        <h2>这里还没有可展示的壁纸</h2>
+        <p>请选择包含壁纸子文件夹的目录。每个壁纸文件夹需要含有 preview.jpg、preview.png 或 preview.gif。</p>
+        <button class="button primary" id="empty-choose">选择文件夹</button>
+      </section>
+      </div>
+    </main>
+    <dialog id="rename-dialog">
+      <form method="dialog" id="rename-form">
+        <h2>修改显示名称</h2>
+        <p>这只会修改应用里的显示名称，不会改动本地壁纸文件夹或里面的文件。</p>
+        <input id="rename-input" autocomplete="off" maxlength="100" />
+        <div class="dialog-actions">
+          <button class="button secondary" value="cancel">取消</button>
+          <button class="button primary" value="confirm">保存</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="collection-dialog">
+      <form method="dialog" id="collection-form">
+        <h2>收藏夹</h2>
+        <p id="collection-wallpaper-name">选择要加入的收藏夹。</p>
+        <div class="collection-list" id="collection-list"></div>
+        <div class="new-collection-row">
+          <input id="new-collection-input" placeholder="新收藏夹名称" maxlength="50" autocomplete="off" />
+          <button class="button secondary" type="button" id="create-from-dialog">新建</button>
+        </div>
+        <div class="dialog-actions"><button class="button primary" value="close">完成</button></div>
+      </form>
+    </dialog>
+    <dialog id="manage-collections-dialog">
+      <form method="dialog">
+        <h2>收藏夹管理</h2><p>创建收藏夹后，可从右上角书签把壁纸加入其中。</p>
+        <div class="collection-list" id="manage-collection-list"></div>
+        <div class="new-collection-row"><input id="manage-collection-input" placeholder="新收藏夹名称" maxlength="50" autocomplete="off" /><button class="button secondary" type="button" id="manage-create-collection">新建</button></div><label class="checkbox-label"><input type="checkbox" id="manage-collection-blur" /> 在此收藏夹中模糊预览图</label>
+        <div class="dialog-actions"><button class="button primary" value="close">完成</button></div>
+      </form>
+    </dialog>
+    <dialog id="settings-dialog"><form method="dialog"><h2>个性化设置</h2><div class="settings-grid"><label>背景色 <input type="color" id="setting-background" /></label><label>背景图片 <button type="button" class="button secondary" id="choose-background">选择图片</button><small id="background-label">未选择</small></label><label>主题色 <input type="color" id="setting-theme" /></label><label>界面透明度 <input type="range" id="setting-opacity" min="35" max="100" /></label><label>字体大小 <input type="range" id="setting-font-size" min="12" max="22" /></label><label>背景音乐 <button type="button" class="button secondary" id="choose-bgm">选择音频</button><small id="bgm-label">未选择</small></label><label>自定义字体 <button type="button" class="button secondary" id="choose-font">导入字体</button><small id="font-label">未选择</small></label></div><div class="dialog-actions"><button type="button" class="button secondary" id="reset-settings">恢复默认</button><button type="button" class="button secondary" id="stop-bgm">停止音乐</button><button class="button primary" value="close">完成</button></div></form></dialog>
+    <script src="renderer.js"></script>
+  </body>
+</html>
