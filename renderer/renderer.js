@@ -21,6 +21,31 @@ let collectionWallpaper = null;
 let customization = {};
 let bgm = new Audio();
 let userGuideLoaded = false;
+const selectedWallpaperIds = new Set();
+let visibleWallpaperIds = [];
+
+function createBulkBar() {
+  const statusRow = document.querySelector('.status-row');
+  const bar = document.createElement('section');
+  bar.className = 'bulk-actions';
+  bar.hidden = true;
+  bar.innerHTML = `
+    <div><strong id="bulk-count">已选择 0 个</strong><span>选择多个壁纸后，可以一次添加到收藏夹，或移动到其他文件夹。</span></div>
+    <select id="bulk-collection" aria-label="收藏夹"></select>
+    <button class="button secondary" type="button" id="select-visible">全选</button>
+    <button class="button secondary" type="button" id="clear-selection">取消选择</button>
+    <button class="button primary" type="button" id="bulk-add-collection">添加到收藏夹</button>
+    <button class="button secondary" type="button" id="bulk-move">移动到文件夹</button>
+  `;
+  statusRow.after(bar);
+  elements.bulkBar = bar;
+  elements.bulkCount = bar.querySelector('#bulk-count');
+  elements.bulkCollection = bar.querySelector('#bulk-collection');
+  elements.selectVisible = bar.querySelector('#select-visible');
+  elements.clearSelection = bar.querySelector('#clear-selection');
+  elements.bulkAddCollection = bar.querySelector('#bulk-add-collection');
+  elements.bulkMove = bar.querySelector('#bulk-move');
+}
 
 function showMessage(message) { elements.count.textContent = message; }
 
@@ -46,6 +71,7 @@ function renderWallpapers() {
     if (sortBy === 'name') return a.name.localeCompare(b.name, 'zh-CN', { numeric: true, sensitivity: 'base' });
     return b.modifiedAt - a.modifiedAt;
   });
+  visibleWallpaperIds = sorted.map((wallpaper) => wallpaper.id);
   elements.grid.replaceChildren(...sorted.map((wallpaper) => {
     const hasBlurCollection = collections.some((collection) => collection.blurPreviews && wallpaper.collectionIds.includes(collection.id));
     return createCard(wallpaper, elements.applyBlur.checked && hasBlurCollection);
@@ -53,6 +79,7 @@ function renderWallpapers() {
   elements.grid.style.gridTemplateColumns = elements.layoutColumns.value === 'auto' ? '' : `repeat(${elements.layoutColumns.value}, minmax(0, 1fr))`;
   elements.empty.hidden = sorted.length > 0;
   elements.grid.hidden = sorted.length === 0;
+  updateBulkBar();
 }
 
 function selectFilter(filter) { elements.collectionFilter.value = filter; renderWallpapers(); renderSidebar(); }
@@ -72,18 +99,32 @@ function renderCollectionFilter() {
     ...collections.map((collection) => new Option(`收藏夹 · ${collection.name}`, `collection:${collection.id}`))
   );
   elements.collectionFilter.value = [...elements.collectionFilter.options].some((option) => option.value === previous) ? previous : 'all';
+  if (elements.bulkCollection) {
+    elements.bulkCollection.replaceChildren(...collections.map((collection) => new Option(collection.name, collection.id)));
+    elements.bulkAddCollection.disabled = selectedWallpaperIds.size === 0 || !collections.length;
+  }
   renderSidebar();
 }
 
 function createCard(wallpaper, blurPreviews = false) {
   const card = document.createElement('article');
   card.className = `wallpaper-card ${blurPreviews ? 'preview-blurred' : ''}`;
+  card.classList.toggle('is-selected', selectedWallpaperIds.has(wallpaper.id));
   const preview = document.createElement('img');
   preview.src = api.toFileUrl(wallpaper.previewPath);
   preview.alt = wallpaper.name;
   preview.loading = 'lazy';
   preview.addEventListener('error', () => { preview.alt = '预览图无法读取'; });
   card.innerHTML = `<button type="button" class="bookmark ${wallpaper.collectionIds.length ? 'is-collected' : ''}" title="收藏夹" aria-label="收藏夹"></button><div class="preview-wrap"><button type="button" class="favorite ${wallpaper.favorite ? 'is-favorite' : ''}" title="喜欢" aria-label="喜欢"><img src="../assets/heart-outline.png" alt="" /></button></div><div class="card-info"><div class="card-name-row"><p class="card-name" title="${escapeHtml(wallpaper.name)}">${escapeHtml(wallpaper.name)}</p><button type="button" class="rename icon-button" title="修改显示名称"><img src="../assets/pencil.png" alt="修改" /></button></div><p class="card-meta">${formatSize(wallpaper.size)}</p><div class="card-actions"><button type="button" class="open">打开</button><button type="button" class="delete">删除</button></div></div>`;
+  const selector = document.createElement('label');
+  selector.className = 'select-card';
+  selector.title = '选择';
+  selector.innerHTML = `<input type="checkbox" ${selectedWallpaperIds.has(wallpaper.id) ? 'checked' : ''} /><span>选择</span>`;
+  selector.querySelector('input').onchange = (event) => {
+    toggleSelected(wallpaper.id, event.currentTarget.checked);
+    card.classList.toggle('is-selected', event.currentTarget.checked);
+  };
+  card.prepend(selector);
   card.querySelector('.preview-wrap').prepend(preview);
   card.querySelector('.open').onclick = () => api.openFolder(wallpaper.folderPath);
   card.querySelector('.rename').onclick = () => openRename(wallpaper);
@@ -93,6 +134,57 @@ function createCard(wallpaper, blurPreviews = false) {
   return card;
 }
 function escapeHtml(value) { return value.replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]); }
+
+function toggleSelected(wallpaperId, selected) {
+  if (selected) selectedWallpaperIds.add(wallpaperId);
+  else selectedWallpaperIds.delete(wallpaperId);
+  updateBulkBar();
+}
+
+function getSelectedWallpapers() {
+  const byId = new Map(wallpapers.map((wallpaper) => [wallpaper.id, wallpaper]));
+  return [...selectedWallpaperIds].map((id) => byId.get(id)).filter(Boolean);
+}
+
+function updateBulkBar() {
+  if (!elements.bulkBar) return;
+  const validIds = new Set(wallpapers.map((wallpaper) => wallpaper.id));
+  [...selectedWallpaperIds].forEach((id) => { if (!validIds.has(id)) selectedWallpaperIds.delete(id); });
+  const count = selectedWallpaperIds.size;
+  const allVisibleSelected = visibleWallpaperIds.length > 0 && visibleWallpaperIds.every((id) => selectedWallpaperIds.has(id));
+  elements.bulkBar.hidden = count === 0 && visibleWallpaperIds.length === 0;
+  elements.bulkCount.textContent = `已选择 ${count} 个`;
+  elements.selectVisible.textContent = allVisibleSelected ? '全不选' : '全选';
+  elements.selectVisible.disabled = visibleWallpaperIds.length === 0;
+  elements.bulkMove.disabled = count === 0;
+  elements.bulkAddCollection.disabled = count === 0 || !collections.length;
+}
+
+async function addSelectedToCollection() {
+  const selected = getSelectedWallpapers();
+  const collectionId = elements.bulkCollection.value;
+  if (!selected.length || !collectionId) return;
+  try {
+    await api.addManyToCollection({ rootPath, collectionId, folderPaths: selected.map((wallpaper) => wallpaper.folderPath) });
+    selectedWallpaperIds.clear();
+    await refresh();
+  } catch (error) {
+    alert(`无法添加所选壁纸：${error.message}`);
+  }
+}
+
+async function moveSelectedWallpapers() {
+  const selected = getSelectedWallpapers();
+  if (!selected.length) return;
+  if (!confirm(`确定要把已选择的 ${selected.length} 个壁纸文件夹移动到其他文件夹吗？`)) return;
+  try {
+    const result = await api.moveMany({ rootPath, folderPaths: selected.map((wallpaper) => wallpaper.folderPath) });
+    if (!result?.canceled) selectedWallpaperIds.clear();
+    await refresh();
+  } catch (error) {
+    alert(`无法移动所选壁纸：${error.message}`);
+  }
+}
 
 async function refresh() {
   if (!rootPath) return chooseFolder();
@@ -175,6 +267,7 @@ elements.form.addEventListener('submit', async (event) => {
   try { await api.rename({ rootPath, folderPath: pendingWallpaper.folderPath, newName: elements.input.value }); elements.dialog.close(); await refresh(); }
   catch (error) { alert(`保存显示名称失败：${error.message}`); }
 });
+createBulkBar();
 elements.choose.onclick = chooseFolder; elements.emptyChoose.onclick = chooseFolder; elements.refresh.onclick = refresh;
 elements.sortBy.onchange = renderWallpapers;
 elements.collectionFilter.onchange = () => { renderWallpapers(); renderSidebar(); };
@@ -184,6 +277,17 @@ elements.newCollection.onclick = () => { renderManageCollections(); elements.man
 elements.createFromDialog.onclick = createCollection;
 elements.manageCreate.onclick = createManagedCollection;
 elements.applyBlur.onchange = renderWallpapers; elements.search.oninput = renderWallpapers;
+elements.selectVisible.onclick = () => {
+  const allVisibleSelected = visibleWallpaperIds.length > 0 && visibleWallpaperIds.every((id) => selectedWallpaperIds.has(id));
+  visibleWallpaperIds.forEach((id) => {
+    if (allVisibleSelected) selectedWallpaperIds.delete(id);
+    else selectedWallpaperIds.add(id);
+  });
+  renderWallpapers();
+};
+elements.clearSelection.onclick = () => { selectedWallpaperIds.clear(); renderWallpapers(); };
+elements.bulkAddCollection.onclick = addSelectedToCollection;
+elements.bulkMove.onclick = moveSelectedWallpapers;
 function applyCustomization() { const c = customization; document.documentElement.style.setProperty('--accent', c.theme || '#b6a8ff'); document.documentElement.style.setProperty('--app-opacity', `${(c.opacity ?? 80) / 100}`); document.documentElement.style.setProperty('--app-font-size', `${c.fontSize || 16}px`); document.documentElement.style.setProperty('--app-background', c.background || '#101114'); document.body.style.backgroundImage = c.backgroundImagePath ? `linear-gradient(rgb(10 10 14 / .42), rgb(10 10 14 / .72)), url("${api.toFileUrl(c.backgroundImagePath)}")` : ''; document.body.style.backgroundSize = 'cover'; document.body.style.backgroundAttachment = 'fixed'; if (c.fontPath) { const style = document.querySelector('#custom-font-style') || Object.assign(document.createElement('style'), { id: 'custom-font-style' }); style.textContent = `@font-face{font-family:UserFont;src:url('${api.toFileUrl(c.fontPath)}')} body{font-family:UserFont,"Microsoft YaHei UI",sans-serif}`; document.head.append(style); } }
 async function saveCustomization() { await api.saveCustomization(customization); applyCustomization(); }
 elements.openSettings.onclick = async () => { customization = await api.getCustomization(); elements.background.value = customization.background || '#101114'; elements.theme.value = customization.theme || '#b6a8ff'; elements.opacity.value = customization.opacity ?? 80; elements.fontSize.value = customization.fontSize || 16; elements.backgroundLabel.textContent = customization.backgroundImagePath ? '已选择背景图片' : '未选择'; elements.bgmLabel.textContent = customization.bgmPath ? '已选择本地音频' : '未选择'; elements.fontLabel.textContent = customization.fontPath ? '已导入字体' : '未选择'; elements.settingsDialog.showModal(); };

@@ -90,6 +90,41 @@ function isInsideRoot(rootPath, targetPath) {
   return relative && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
+async function pathExists(targetPath) {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function getUniqueDestination(destinationRoot, folderName) {
+  const parsed = path.parse(folderName);
+  let destinationPath = path.join(destinationRoot, folderName);
+  let index = 2;
+  while (await pathExists(destinationPath)) {
+    destinationPath = path.join(destinationRoot, `${parsed.name} (${index})${parsed.ext}`);
+    index += 1;
+  }
+  return destinationPath;
+}
+
+function isSameOrInside(parentPath, targetPath) {
+  const relative = path.relative(parentPath, targetPath);
+  return !relative || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function moveFolder(sourcePath, destinationPath) {
+  try {
+    await fs.rename(sourcePath, destinationPath);
+  } catch (error) {
+    if (error.code !== 'EXDEV') throw error;
+    await fs.cp(sourcePath, destinationPath, { recursive: true, errorOnExist: true });
+    await fs.rm(sourcePath, { recursive: true, force: true, maxRetries: 2 });
+  }
+}
+
 function createWindow() {
   const window = new BrowserWindow({
     title: '壁纸盒',
@@ -171,6 +206,53 @@ app.whenReady().then(() => {
     });
   });
 
+  ipcMain.handle('library:move-many', async (_event, { rootPath, folderPaths }) => {
+    const pathsToMove = Array.isArray(folderPaths) ? [...new Set(folderPaths)] : [];
+    if (!rootPath || !pathsToMove.length) return { moved: 0 };
+    for (const folderPath of pathsToMove) {
+      if (!isInsideRoot(rootPath, folderPath) || path.dirname(folderPath) !== rootPath) {
+        throw new Error('只能移动当前壁纸目录中的一级壁纸文件夹。');
+      }
+    }
+    const result = await dialog.showOpenDialog({
+      title: '选择要移动到的文件夹',
+      properties: ['openDirectory', 'createDirectory']
+    });
+    if (result.canceled || !result.filePaths[0]) return { moved: 0, canceled: true };
+    const destinationRoot = result.filePaths[0];
+    if (path.resolve(destinationRoot) === path.resolve(rootPath)) {
+      throw new Error('请选择不同的目标文件夹。');
+    }
+    if (pathsToMove.some((folderPath) => isSameOrInside(folderPath, destinationRoot))) {
+      throw new Error('目标文件夹不能在已选择的壁纸文件夹里面。');
+    }
+    let moved = 0;
+    const movedNames = [];
+    for (const folderPath of pathsToMove) {
+      const originalName = path.basename(folderPath);
+      const destinationPath = await getUniqueDestination(destinationRoot, originalName);
+      await moveFolder(folderPath, destinationPath);
+      moved += 1;
+      movedNames.push(originalName);
+    }
+    const settings = await getSettings();
+    const displayNames = settings.displayNamesByRoot?.[rootPath];
+    if (displayNames) {
+      movedNames.forEach((name) => delete displayNames[name]);
+      await saveSettings(settings);
+    }
+    await updateLibraryData(rootPath, (data) => {
+      const movedNameSet = new Set(movedNames);
+      movedNames.forEach((name) => {
+        delete data.favorites[name];
+      });
+      data.collections.forEach((collection) => {
+        collection.wallpaperIds = collection.wallpaperIds.filter((id) => !movedNameSet.has(id));
+      });
+    });
+    return { moved };
+  });
+
   ipcMain.handle('collections:get', async (_event, rootPath) => getLibraryData(await getSettings(), rootPath));
 
   ipcMain.handle('collections:create', async (_event, { rootPath, name, blurPreviews }) => {
@@ -223,6 +305,24 @@ app.whenReady().then(() => {
       if (collection.wallpaperIds.includes(originalName)) {
         collection.wallpaperIds = collection.wallpaperIds.filter((id) => id !== originalName);
       } else collection.wallpaperIds.push(originalName);
+    });
+  });
+
+  ipcMain.handle('collections:add-many', async (_event, { rootPath, folderPaths, collectionId }) => {
+    const pathsToAdd = Array.isArray(folderPaths) ? [...new Set(folderPaths)] : [];
+    if (!rootPath || !pathsToAdd.length) return getLibraryData(await getSettings(), rootPath);
+    const wallpaperIds = pathsToAdd.map((folderPath) => {
+      if (!isInsideRoot(rootPath, folderPath) || path.dirname(folderPath) !== rootPath) {
+        throw new Error('只能添加当前壁纸目录中的壁纸。');
+      }
+      return path.basename(folderPath);
+    });
+    return updateLibraryData(rootPath, (library) => {
+      const collection = library.collections.find((item) => item.id === collectionId);
+      if (!collection) throw new Error('找不到该收藏夹。');
+      const existing = new Set(collection.wallpaperIds);
+      wallpaperIds.forEach((id) => existing.add(id));
+      collection.wallpaperIds = [...existing];
     });
   });
 
