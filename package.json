@@ -1,6 +1,6 @@
 {
   "name": "wallpaper-local-library",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "壁纸盒：本地 Wallpaper 壁纸文件夹管理器",
   "main": "main.js",
   "scripts": {
@@ -20,6 +20,13 @@
     "directories": {
       "output": "dist"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "SNP-LDN",
+        "repo": "wallpaper_box"
+      }
+    ],
     "files": [
       "main.js",
       "preload.js",
@@ -34,7 +41,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "assets/icon.ico"
@@ -45,5 +54,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }

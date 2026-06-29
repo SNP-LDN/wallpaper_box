@@ -24,5 +24,12 @@ contextBridge.exposeInMainWorld('wallpaperLibrary', {
   saveCustomization: (data) => ipcRenderer.invoke('app:save-customization', data),
   chooseMedia: (type) => ipcRenderer.invoke('app:choose-media', type),
   getUserGuide: () => ipcRenderer.invoke('app:get-user-guide'),
+  checkUpdate: () => ipcRenderer.invoke('app:check-update', true),
+  installUpdate: () => ipcRenderer.invoke('app:install-update'),
+  onUpdateStatus: (callback) => {
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on('update:status', listener);
+    return () => ipcRenderer.removeListener('update:status', listener);
+  },
   toFileUrl: toLocalFileUrl
 });

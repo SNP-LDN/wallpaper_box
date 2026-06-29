@@ -1,8 +1,12 @@
 const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
 const PREVIEW_NAMES = new Set(['preview.jpg', 'preview.jpeg', 'preview.png', 'preview.gif']);
+let mainWindow = null;
+let manualUpdateCheck = false;
+let updateReadyToInstall = false;
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -146,6 +150,78 @@ function createWindow() {
     return { action: 'deny' };
   });
   window.loadFile('renderer/index.html');
+  mainWindow = window;
+  return window;
+}
+
+function sendUpdateStatus(status) {
+  mainWindow?.webContents.send('update:status', status);
+}
+
+function setupAutoUpdater() {
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+
+  autoUpdater.on('checking-for-update', () => {
+    sendUpdateStatus({ state: 'checking', message: '正在检查更新...' });
+  });
+
+  autoUpdater.on('update-available', async (info) => {
+    sendUpdateStatus({ state: 'available', version: info.version, message: `发现新版本 v${info.version}` });
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: '发现新版本',
+      message: `发现新版本 v${info.version}`,
+      detail: '可以在应用内下载并安装更新，不需要手动重新下载安装包。',
+      buttons: ['现在下载', '稍后'],
+      defaultId: 0,
+      cancelId: 1
+    });
+    if (result.response === 0) {
+      sendUpdateStatus({ state: 'downloading', version: info.version, message: '正在下载更新...' });
+      autoUpdater.downloadUpdate();
+    }
+  });
+
+  autoUpdater.on('update-not-available', () => {
+    const status = { state: 'not-available', message: '当前已经是最新版本。' };
+    sendUpdateStatus(status);
+    if (manualUpdateCheck) dialog.showMessageBox(mainWindow, { type: 'info', title: '检查更新', message: status.message });
+    manualUpdateCheck = false;
+  });
+
+  autoUpdater.on('download-progress', (progress) => {
+    sendUpdateStatus({
+      state: 'downloading',
+      percent: progress.percent,
+      message: `正在下载更新... ${Math.round(progress.percent)}%`
+    });
+  });
+
+  autoUpdater.on('update-downloaded', async (info) => {
+    updateReadyToInstall = true;
+    sendUpdateStatus({ state: 'downloaded', version: info.version, message: '更新已下载，重启后即可安装。' });
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: '更新已准备好',
+      message: `v${info.version} 已下载完成`,
+      detail: '是否现在重启应用并安装更新？',
+      buttons: ['立即重启安装', '稍后'],
+      defaultId: 0,
+      cancelId: 1
+    });
+    if (result.response === 0) autoUpdater.quitAndInstall(false, true);
+  });
+
+  autoUpdater.on('error', (error) => {
+    manualUpdateCheck = false;
+    sendUpdateStatus({ state: 'error', message: `检查更新失败：${error.message}` });
+    dialog.showMessageBox(mainWindow, {
+      type: 'error',
+      title: '检查更新失败',
+      message: error.message
+    });
+  });
 }
 
 app.whenReady().then(() => {
@@ -286,6 +362,23 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('app:get-user-guide', async () => fs.readFile(path.join(__dirname, 'USER_GUIDE.md'), 'utf8'));
 
+  ipcMain.handle('app:check-update', async (_event, manual = true) => {
+    manualUpdateCheck = Boolean(manual);
+    if (!app.isPackaged) {
+      const status = { state: 'dev', message: '开发模式下不会检查线上更新。' };
+      sendUpdateStatus(status);
+      return status;
+    }
+    await autoUpdater.checkForUpdates();
+    return { state: 'checking', message: '正在检查更新...' };
+  });
+
+  ipcMain.handle('app:install-update', async () => {
+    if (!updateReadyToInstall) return false;
+    autoUpdater.quitAndInstall(false, true);
+    return true;
+  });
+
   ipcMain.handle('collections:toggle-favorite', async (_event, { rootPath, folderPath }) => {
     if (!isInsideRoot(rootPath, folderPath)) throw new Error('壁纸不属于当前目录。');
     const originalName = path.basename(folderPath);
@@ -328,6 +421,8 @@ app.whenReady().then(() => {
 
   ipcMain.handle('library:open-folder', async (_event, folderPath) => shell.openPath(folderPath));
   createWindow();
+  setupAutoUpdater();
+  if (app.isPackaged) setTimeout(() => autoUpdater.checkForUpdates().catch(() => {}), 3000);
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
