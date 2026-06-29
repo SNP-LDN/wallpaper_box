@@ -15,6 +15,12 @@ npm start
 
 首次打开时选择 Wallpaper 的保存根目录。应用会读取该目录下的一级文件夹，并展示其中存在下列预览文件的壁纸：
 
+## 下载链接
+
+- GitHub：https://github.com/SNP-LDN/wallpaper_box
+- 百度网盘：https://pan.baidu.com/s/5_e1z8bEEHWcTm48az00-PA
+- 夸克云：https://pan.quark.cn/s/1c8894a8bc1a
+
 - `preview.jpg` / `preview.jpeg`
 - `preview.png`
 - `preview.gif`
@@ -45,10 +51,14 @@ npm run dist:installer
 npm run dist:portable
 ```
 
-生成 `dist\wallpaper_box-1.0.0-portable.exe`。无需安装，下载后可直接双击运行，适合临时使用、测试或放入 U 盘。
+生成 `dist-portable\wallpaper_box-版本号-portable.exe`。无需安装，下载后可直接双击运行，适合临时使用、测试或放入 U 盘。
 
-### 同时生成两个版本
+### 默认生成安装版
 
 ```powershell
 npm run dist
 ```
+
+`npm run dist` 默认只生成安装版，避免便携版打包时因为 Windows、OneDrive 或杀毒软件占用 `dist\win-unpacked` 导致失败。
+
+安装版支持应用内检查、下载和重启安装更新。便携版不支持应用内更新；如果发布了新版便携版，用户需要重新下载新的 `portable.exe`。

@@ -4,9 +4,18 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 const PREVIEW_NAMES = new Set(['preview.jpg', 'preview.jpeg', 'preview.png', 'preview.gif']);
+const DOWNLOAD_LINKS = {
+  github: 'https://github.com/SNP-LDN/wallpaper_box/releases',
+  baidu: 'https://pan.baidu.com/s/5_e1z8bEEHWcTm48az00-PA',
+  quark: 'https://pan.quark.cn/s/1c8894a8bc1a'
+};
 let mainWindow = null;
 let manualUpdateCheck = false;
 let updateReadyToInstall = false;
+
+function isPortableBuild() {
+  return Boolean(process.env.PORTABLE_EXECUTABLE_DIR);
+}
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -159,6 +168,10 @@ function sendUpdateStatus(status) {
 }
 
 function setupAutoUpdater() {
+  if (isPortableBuild()) {
+    sendUpdateStatus({ state: 'portable', message: '便携版不支持应用内更新，请下载新版便携版或安装版。' });
+    return;
+  }
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
 
@@ -172,14 +185,20 @@ function setupAutoUpdater() {
       type: 'info',
       title: '发现新版本',
       message: `发现新版本 v${info.version}`,
-      detail: '可以在应用内下载并安装更新，不需要手动重新下载安装包。',
-      buttons: ['现在下载', '稍后'],
+      detail: '安装版可以在应用内下载并安装更新。也可以选择网盘链接手动下载。',
+      buttons: ['应用内下载', 'GitHub', '百度网盘', '夸克云', '稍后'],
       defaultId: 0,
-      cancelId: 1
+      cancelId: 4
     });
     if (result.response === 0) {
       sendUpdateStatus({ state: 'downloading', version: info.version, message: '正在下载更新...' });
       autoUpdater.downloadUpdate();
+    } else if (result.response === 1) {
+      shell.openExternal(DOWNLOAD_LINKS.github);
+    } else if (result.response === 2) {
+      shell.openExternal(DOWNLOAD_LINKS.baidu);
+    } else if (result.response === 3) {
+      shell.openExternal(DOWNLOAD_LINKS.quark);
     }
   });
 
@@ -364,6 +383,26 @@ app.whenReady().then(() => {
 
   ipcMain.handle('app:check-update', async (_event, manual = true) => {
     manualUpdateCheck = Boolean(manual);
+    if (isPortableBuild()) {
+      const status = { state: 'portable', message: '便携版不支持应用内更新，请下载新版便携版或安装版。' };
+      sendUpdateStatus(status);
+      if (manualUpdateCheck) {
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'info',
+          title: '检查更新',
+          message: status.message,
+          detail: '便携版需要手动下载新版程序。',
+          buttons: ['GitHub', '百度网盘', '夸克云', '关闭'],
+          defaultId: 0,
+          cancelId: 3
+        });
+        if (result.response === 0) shell.openExternal(DOWNLOAD_LINKS.github);
+        else if (result.response === 1) shell.openExternal(DOWNLOAD_LINKS.baidu);
+        else if (result.response === 2) shell.openExternal(DOWNLOAD_LINKS.quark);
+      }
+      manualUpdateCheck = false;
+      return status;
+    }
     if (!app.isPackaged) {
       const status = { state: 'dev', message: '开发模式下不会检查线上更新。' };
       sendUpdateStatus(status);
@@ -422,7 +461,7 @@ app.whenReady().then(() => {
   ipcMain.handle('library:open-folder', async (_event, folderPath) => shell.openPath(folderPath));
   createWindow();
   setupAutoUpdater();
-  if (app.isPackaged) setTimeout(() => autoUpdater.checkForUpdates().catch(() => {}), 3000);
+  if (app.isPackaged && !isPortableBuild()) setTimeout(() => autoUpdater.checkForUpdates().catch(() => {}), 3000);
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 

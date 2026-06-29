@@ -4,6 +4,7 @@ node_modules/
 
 # Packaged application and build output
 dist/
+dist-portable/
 out/
 release/
 

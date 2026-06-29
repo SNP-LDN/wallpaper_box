@@ -177,6 +177,12 @@ C:\Users\你的用户名\AppData\Roaming\wallpaper-local-library
 GitHub：
 https://github.com/SNP-LDN/wallpaper_box
 
+百度网盘：
+https://pan.baidu.com/s/5_e1z8bEEHWcTm48az00-PA
+
+夸克云：
+https://pan.quark.cn/s/1c8894a8bc1a
+
 爱发电：
 https://ifdian.net/album/6351ad746fdf11f1948e52540025c377
 
@@ -194,3 +200,10 @@ https://space.bilibili.com/425424806/dynamic
 十一、更新日志
 -------------
 v1.0.0：初始版本上传
+
+十二、软件更新
+-------------
+
+安装版支持在应用内检查、下载并重启安装更新。
+
+便携版不支持应用内更新。如果你使用的是 portable.exe，发布新版后需要手动下载新的便携版程序，或者改用安装版。
