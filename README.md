@@ -62,3 +62,13 @@ npm run dist
 `npm run dist` 默认只生成安装版，避免便携版打包时因为 Windows、OneDrive 或杀毒软件占用 `dist\win-unpacked` 导致失败。
 
 安装版支持应用内检查、下载和重启安装更新。便携版不支持应用内更新；如果发布了新版便携版，用户需要重新下载新的 `portable.exe`。
+
+### 国内备用更新源
+
+项目根目录中的 `latest.json` 可上传到 Gitee 仓库，用作国内备用更新通知源。程序会读取：
+
+```text
+https://gitee.com/SNP-LDN/wallpaper_box/raw/master/latest.json
+```
+
+如果 Gitee 默认分支不是 `master`，请把代码里的备用更新地址改成实际 Raw 链接。

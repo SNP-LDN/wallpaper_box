@@ -9,6 +9,7 @@ const DOWNLOAD_LINKS = {
   baidu: 'https://pan.baidu.com/s/5_e1z8bEEHWcTm48az00-PA',
   quark: 'https://pan.quark.cn/s/1c8894a8bc1a'
 };
+const FALLBACK_UPDATE_URL = 'https://gitee.com/SNP-LDN/wallpaper_box/raw/master/latest.json';
 let mainWindow = null;
 let manualUpdateCheck = false;
 let updateReadyToInstall = false;
@@ -172,6 +173,17 @@ function isMissingUpdateMetadataError(error) {
   return message.includes('latest.yml') && message.includes('404');
 }
 
+function compareVersions(a, b) {
+  const left = String(a || '').replace(/^v/i, '').split('.').map((part) => Number(part) || 0);
+  const right = String(b || '').replace(/^v/i, '').split('.').map((part) => Number(part) || 0);
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    if ((left[index] || 0) > (right[index] || 0)) return 1;
+    if ((left[index] || 0) < (right[index] || 0)) return -1;
+  }
+  return 0;
+}
+
 async function showDownloadLinksDialog({ title, message, detail, type = 'info' }) {
   const result = await dialog.showMessageBox(mainWindow, {
     type,
@@ -185,6 +197,40 @@ async function showDownloadLinksDialog({ title, message, detail, type = 'info' }
   if (result.response === 0) shell.openExternal(DOWNLOAD_LINKS.github);
   else if (result.response === 1) shell.openExternal(DOWNLOAD_LINKS.baidu);
   else if (result.response === 2) shell.openExternal(DOWNLOAD_LINKS.quark);
+}
+
+async function checkFallbackUpdate({ silent = false } = {}) {
+  try {
+    const response = await fetch(`${FALLBACK_UPDATE_URL}?t=${Date.now()}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const update = await response.json();
+    const latestVersion = update.version;
+    if (latestVersion && compareVersions(latestVersion, app.getVersion()) > 0) {
+      sendUpdateStatus({ state: 'available', version: latestVersion, message: `发现新版本 v${latestVersion}` });
+      await showDownloadLinksDialog({
+        title: '发现新版本',
+        message: `发现新版本 v${latestVersion}`,
+        detail: update.notes || '请选择一个下载入口手动下载新版。'
+      });
+      return { state: 'available', version: latestVersion };
+    }
+    const status = { state: 'not-available', message: '当前已经是最新版本。' };
+    sendUpdateStatus(status);
+    if (!silent) dialog.showMessageBox(mainWindow, { type: 'info', title: '检查更新', message: status.message });
+    return status;
+  } catch (error) {
+    const status = { state: 'error', message: '备用更新源连接失败，请稍后重试或手动打开下载链接。' };
+    sendUpdateStatus(status);
+    if (!silent) {
+      await showDownloadLinksDialog({
+        type: 'error',
+        title: '检查更新失败',
+        message: status.message,
+        detail: `${error.message}\n\n你也可以通过下面的链接手动下载新版。`
+      });
+    }
+    return status;
+  }
 }
 
 function setupAutoUpdater() {
@@ -257,6 +303,8 @@ function setupAutoUpdater() {
     if (isMissingUpdateMetadataError(error)) {
       const status = { state: 'error', message: '自动更新文件未上传，请通过下载链接获取新版。' };
       sendUpdateStatus(status);
+      const fallbackStatus = await checkFallbackUpdate({ silent: true });
+      if (fallbackStatus.state === 'available') return;
       await showDownloadLinksDialog({
         title: '无法自动更新',
         message: '没有找到自动更新文件 latest.yml',
@@ -415,21 +463,10 @@ app.whenReady().then(() => {
   ipcMain.handle('app:check-update', async (_event, manual = true) => {
     manualUpdateCheck = Boolean(manual);
     if (isPortableBuild()) {
-      const status = { state: 'portable', message: '便携版不支持应用内更新，请下载新版便携版或安装版。' };
+      const status = { state: 'checking', message: '正在检查备用更新源...' };
       sendUpdateStatus(status);
       if (manualUpdateCheck) {
-        const result = await dialog.showMessageBox(mainWindow, {
-          type: 'info',
-          title: '检查更新',
-          message: status.message,
-          detail: '便携版需要手动下载新版程序。',
-          buttons: ['GitHub', '百度网盘', '夸克云', '关闭'],
-          defaultId: 0,
-          cancelId: 3
-        });
-        if (result.response === 0) shell.openExternal(DOWNLOAD_LINKS.github);
-        else if (result.response === 1) shell.openExternal(DOWNLOAD_LINKS.baidu);
-        else if (result.response === 2) shell.openExternal(DOWNLOAD_LINKS.quark);
+        await checkFallbackUpdate({ silent: false });
       }
       manualUpdateCheck = false;
       return status;
@@ -492,7 +529,9 @@ app.whenReady().then(() => {
   ipcMain.handle('library:open-folder', async (_event, folderPath) => shell.openPath(folderPath));
   createWindow();
   setupAutoUpdater();
-  if (app.isPackaged && !isPortableBuild()) setTimeout(() => autoUpdater.checkForUpdates().catch(() => {}), 3000);
+  if (app.isPackaged && !isPortableBuild()) {
+    setTimeout(() => autoUpdater.checkForUpdates().catch(() => checkFallbackUpdate({ silent: true })), 3000);
+  }
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
