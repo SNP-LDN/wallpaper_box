@@ -167,6 +167,26 @@ function sendUpdateStatus(status) {
   mainWindow?.webContents.send('update:status', status);
 }
 
+function isMissingUpdateMetadataError(error) {
+  const message = String(error?.message || error || '');
+  return message.includes('latest.yml') && message.includes('404');
+}
+
+async function showDownloadLinksDialog({ title, message, detail, type = 'info' }) {
+  const result = await dialog.showMessageBox(mainWindow, {
+    type,
+    title,
+    message,
+    detail,
+    buttons: ['GitHub', '百度网盘', '夸克云', '关闭'],
+    defaultId: 0,
+    cancelId: 3
+  });
+  if (result.response === 0) shell.openExternal(DOWNLOAD_LINKS.github);
+  else if (result.response === 1) shell.openExternal(DOWNLOAD_LINKS.baidu);
+  else if (result.response === 2) shell.openExternal(DOWNLOAD_LINKS.quark);
+}
+
 function setupAutoUpdater() {
   if (isPortableBuild()) {
     sendUpdateStatus({ state: 'portable', message: '便携版不支持应用内更新，请下载新版便携版或安装版。' });
@@ -232,13 +252,24 @@ function setupAutoUpdater() {
     if (result.response === 0) autoUpdater.quitAndInstall(false, true);
   });
 
-  autoUpdater.on('error', (error) => {
+  autoUpdater.on('error', async (error) => {
     manualUpdateCheck = false;
+    if (isMissingUpdateMetadataError(error)) {
+      const status = { state: 'error', message: '自动更新文件未上传，请通过下载链接获取新版。' };
+      sendUpdateStatus(status);
+      await showDownloadLinksDialog({
+        title: '无法自动更新',
+        message: '没有找到自动更新文件 latest.yml',
+        detail: '当前 GitHub Release 缺少安装版自动更新所需的 latest.yml 文件，应用内自动更新暂时不可用。你可以通过下面的链接手动下载新版。'
+      });
+      return;
+    }
     sendUpdateStatus({ state: 'error', message: `检查更新失败：${error.message}` });
-    dialog.showMessageBox(mainWindow, {
+    await showDownloadLinksDialog({
       type: 'error',
       title: '检查更新失败',
-      message: error.message
+      message: '检查更新时遇到问题',
+      detail: `${error.message}\n\n你也可以通过下面的链接手动下载新版。`
     });
   });
 }
