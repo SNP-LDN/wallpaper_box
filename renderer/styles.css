@@ -21,6 +21,9 @@ h1 { margin: 0; font-size: clamp(30px, 4vw, 46px); letter-spacing: -.04em; }
 .bulk-actions strong { color: #f6f3ff; }
 .bulk-actions span { overflow: hidden; color: #aaaab4; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .bulk-actions select { min-width: 0; border: 1px solid #3a3b45; border-radius: 9px; padding: 10px; outline: none; color: #ededf3; background: #202127; }
+.source-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 16px; }
+.source-filters button { border: 1px solid #343640; border-radius: 8px; padding: 8px 10px; color: #d8d9e3; background: #1c1d23; cursor: pointer; }
+.source-filters button.active { border-color: var(--accent); color: #111218; background: var(--accent); }
 .wallpaper-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 18px; }
 .wallpaper-card { position: relative; overflow: visible; border: 1px solid #2d2e36; border-radius: 14px; background: #191a1f; box-shadow: 0 12px 28px #00000020; }
 .wallpaper-card.is-selected { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 54%, transparent), 0 12px 28px #00000024; }

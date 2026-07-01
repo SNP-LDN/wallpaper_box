@@ -37,8 +37,42 @@ async function saveSettings(settings) {
 function getLibraryData(settings, rootPath) {
   return {
     favorites: settings.favoritesByRoot?.[rootPath] || {},
-    collections: settings.collectionsByRoot?.[rootPath] || []
+    collections: getGlobalCollections(settings)
   };
+}
+
+function normalizeLibraryRoots(settings) {
+  const roots = Array.isArray(settings.libraryRoots) ? settings.libraryRoots : [];
+  if (settings.libraryRoot) roots.unshift(settings.libraryRoot);
+  return [...new Set(roots.filter(Boolean))];
+}
+
+function wallpaperKey(rootPath, folderName) {
+  return `${rootPath}::${folderName}`;
+}
+
+function getGlobalCollections(settings) {
+  if (Array.isArray(settings.collections)) return settings.collections;
+  const legacyCollectionsByRoot = settings.collectionsByRoot || {};
+  const merged = [];
+  Object.entries(legacyCollectionsByRoot).forEach(([rootPath, collections]) => {
+    (collections || []).forEach((collection) => {
+      const existing = merged.find((item) => item.name === collection.name);
+      const wallpaperIds = (collection.wallpaperIds || []).map((id) => id.includes('::') ? id : wallpaperKey(rootPath, id));
+      if (existing) {
+        existing.wallpaperIds = [...new Set([...(existing.wallpaperIds || []), ...wallpaperIds])];
+        existing.blurPreviews = existing.blurPreviews || Boolean(collection.blurPreviews);
+      } else {
+        merged.push({
+          id: collection.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          name: collection.name,
+          wallpaperIds,
+          blurPreviews: Boolean(collection.blurPreviews)
+        });
+      }
+    });
+  });
+  return merged;
 }
 
 async function updateLibraryData(rootPath, updater) {
@@ -46,9 +80,17 @@ async function updateLibraryData(rootPath, updater) {
   const data = getLibraryData(settings, rootPath);
   updater(data);
   settings.favoritesByRoot = { ...(settings.favoritesByRoot || {}), [rootPath]: data.favorites };
-  settings.collectionsByRoot = { ...(settings.collectionsByRoot || {}), [rootPath]: data.collections };
   await saveSettings(settings);
   return data;
+}
+
+async function updateCollections(updater) {
+  const settings = await getSettings();
+  const collections = getGlobalCollections(settings);
+  updater(collections);
+  settings.collections = collections;
+  await saveSettings(settings);
+  return { collections };
 }
 
 async function getFolderSize(folderPath) {
@@ -84,11 +126,13 @@ async function scanLibrary(rootPath) {
     const previewPath = path.join(folderPath, preview.name);
     const stat = await fs.stat(folderPath);
     return {
-      id: folder.name,
+      id: wallpaperKey(rootPath, folder.name),
       name: displayNames[folder.name] || folder.name,
       originalName: folder.name,
+      rootPath,
+      rootName: path.basename(rootPath) || rootPath,
       favorite: Boolean(favorites[folder.name]),
-      collectionIds: collections.filter((collection) => collection.wallpaperIds.includes(folder.name)).map((collection) => collection.id),
+      collectionIds: collections.filter((collection) => collection.wallpaperIds.includes(wallpaperKey(rootPath, folder.name))).map((collection) => collection.id),
       folderPath,
       previewPath,
       previewType: path.extname(preview.name).toLowerCase(),
@@ -97,6 +141,18 @@ async function scanLibrary(rootPath) {
     };
   }));
   return wallpapers.filter(Boolean);
+}
+
+async function scanLibraries(rootPaths) {
+  const roots = Array.isArray(rootPaths) ? rootPaths.filter(Boolean) : [rootPaths].filter(Boolean);
+  const groups = await Promise.all(roots.map(async (rootPath) => {
+    try {
+      return await scanLibrary(rootPath);
+    } catch {
+      return [];
+    }
+  }));
+  return groups.flat();
 }
 
 function isInsideRoot(rootPath, targetPath) {
@@ -323,22 +379,23 @@ function setupAutoUpdater() {
 }
 
 app.whenReady().then(() => {
-  ipcMain.handle('library:get-root', async () => (await getSettings()).libraryRoot || null);
+  ipcMain.handle('library:get-root', async () => normalizeLibraryRoots(await getSettings()));
 
   ipcMain.handle('library:choose-root', async () => {
     const result = await dialog.showOpenDialog({
       title: '选择 Wallpaper 保存目录',
-      properties: ['openDirectory', 'createDirectory']
+      properties: ['openDirectory', 'createDirectory', 'multiSelections']
     });
     if (result.canceled || !result.filePaths[0]) return null;
-    const libraryRoot = result.filePaths[0];
-    await saveSettings({ ...(await getSettings()), libraryRoot });
-    return libraryRoot;
+    const settings = await getSettings();
+    const libraryRoots = [...new Set([...normalizeLibraryRoots(settings), ...result.filePaths])];
+    await saveSettings({ ...settings, libraryRoot: libraryRoots[0] || null, libraryRoots });
+    return libraryRoots;
   });
 
   ipcMain.handle('library:scan', async (_event, rootPath) => {
     if (!rootPath) return [];
-    return scanLibrary(rootPath);
+    return Array.isArray(rootPath) ? scanLibraries(rootPath) : scanLibrary(rootPath);
   });
 
   ipcMain.handle('library:rename', async (_event, { rootPath, folderPath, newName }) => {
@@ -374,8 +431,11 @@ app.whenReady().then(() => {
     await updateLibraryData(rootPath, (data) => {
       const originalName = path.basename(folderPath);
       delete data.favorites[originalName];
-      data.collections.forEach((collection) => {
-        collection.wallpaperIds = collection.wallpaperIds.filter((id) => id !== originalName);
+    });
+    await updateCollections((collections) => {
+      const removedId = wallpaperKey(rootPath, path.basename(folderPath));
+      collections.forEach((collection) => {
+        collection.wallpaperIds = collection.wallpaperIds.filter((id) => id !== removedId);
       });
     });
   });
@@ -416,31 +476,34 @@ app.whenReady().then(() => {
       await saveSettings(settings);
     }
     await updateLibraryData(rootPath, (data) => {
-      const movedNameSet = new Set(movedNames);
       movedNames.forEach((name) => {
         delete data.favorites[name];
       });
-      data.collections.forEach((collection) => {
-        collection.wallpaperIds = collection.wallpaperIds.filter((id) => !movedNameSet.has(id));
+    });
+    await updateCollections((collections) => {
+      const movedIdSet = new Set(movedNames.map((name) => wallpaperKey(rootPath, name)));
+      collections.forEach((collection) => {
+        collection.wallpaperIds = collection.wallpaperIds.filter((id) => !movedIdSet.has(id));
       });
     });
     return { moved };
   });
 
-  ipcMain.handle('collections:get', async (_event, rootPath) => getLibraryData(await getSettings(), rootPath));
+  ipcMain.handle('collections:get', async () => ({ collections: getGlobalCollections(await getSettings()) }));
 
   ipcMain.handle('collections:create', async (_event, { rootPath, name, blurPreviews }) => {
     const cleanName = String(name || '').trim();
     if (!cleanName || cleanName.length > 50) throw new Error('收藏夹名称需要为 1 到 50 个字符。');
-    const data = await updateLibraryData(rootPath, (library) => {
-      if (library.collections.some((collection) => collection.name === cleanName)) throw new Error('已有同名收藏夹。');
-      library.collections.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: cleanName, wallpaperIds: [], blurPreviews: Boolean(blurPreviews) });
+    const data = await updateCollections((collections) => {
+      if (collections.some((collection) => collection.name === cleanName)) throw new Error('已有同名收藏夹。');
+      collections.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: cleanName, wallpaperIds: [], blurPreviews: Boolean(blurPreviews) });
     });
     return data.collections.at(-1);
   });
 
-  ipcMain.handle('collections:delete', async (_event, { rootPath, collectionId }) => updateLibraryData(rootPath, (library) => {
-    library.collections = library.collections.filter((collection) => collection.id !== collectionId);
+  ipcMain.handle('collections:delete', async (_event, { collectionId }) => updateCollections((collections) => {
+    const index = collections.findIndex((collection) => collection.id === collectionId);
+    if (index >= 0) collections.splice(index, 1);
   }));
 
   ipcMain.handle('app:get-customization', async () => (await getSettings()).customization || {});
@@ -498,13 +561,13 @@ app.whenReady().then(() => {
 
   ipcMain.handle('collections:toggle-wallpaper', async (_event, { rootPath, folderPath, collectionId }) => {
     if (!isInsideRoot(rootPath, folderPath)) throw new Error('壁纸不属于当前目录。');
-    const originalName = path.basename(folderPath);
-    return updateLibraryData(rootPath, (library) => {
-      const collection = library.collections.find((item) => item.id === collectionId);
+    const wallpaperId = wallpaperKey(rootPath, path.basename(folderPath));
+    return updateCollections((collections) => {
+      const collection = collections.find((item) => item.id === collectionId);
       if (!collection) throw new Error('找不到该收藏夹。');
-      if (collection.wallpaperIds.includes(originalName)) {
-        collection.wallpaperIds = collection.wallpaperIds.filter((id) => id !== originalName);
-      } else collection.wallpaperIds.push(originalName);
+      if (collection.wallpaperIds.includes(wallpaperId)) {
+        collection.wallpaperIds = collection.wallpaperIds.filter((id) => id !== wallpaperId);
+      } else collection.wallpaperIds.push(wallpaperId);
     });
   });
 
@@ -515,10 +578,10 @@ app.whenReady().then(() => {
       if (!isInsideRoot(rootPath, folderPath) || path.dirname(folderPath) !== rootPath) {
         throw new Error('只能添加当前壁纸目录中的壁纸。');
       }
-      return path.basename(folderPath);
+      return wallpaperKey(rootPath, path.basename(folderPath));
     });
-    return updateLibraryData(rootPath, (library) => {
-      const collection = library.collections.find((item) => item.id === collectionId);
+    return updateCollections((collections) => {
+      const collection = collections.find((item) => item.id === collectionId);
       if (!collection) throw new Error('找不到该收藏夹。');
       const existing = new Set(collection.wallpaperIds);
       wallpaperIds.forEach((id) => existing.add(id));

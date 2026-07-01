@@ -12,7 +12,7 @@
         <div class="brand"><img class="brand-logo" src="../assets/logo.png" alt="壁纸盒 Logo" /><div><strong>壁纸盒</strong><small>本地壁纸管理</small></div></div>
         <nav class="side-nav" id="side-nav"><button data-filter="all" class="active">全部壁纸</button><button data-filter="favorite">♥ 喜欢</button><p>我的收藏夹</p><div id="sidebar-collections"></div></nav>
         <button class="settings-button" id="open-settings">⚙ 设置</button>
-        <div class="sidebar-info"><strong>壁纸盒</strong><span>v1.1.3</span><p>不打开 Wallpaper Engine，也能整理本地残留壁纸。</p><div class="support-links"><a href="https://github.com/SNP-LDN/wallpaper_box" target="_blank" rel="noreferrer">GitHub</a><a href="https://ifdian.net/album/6351ad746fdf11f1948e52540025c377" target="_blank" rel="noreferrer">爱发电</a><a href="https://space.bilibili.com/425424806/dynamic" target="_blank" rel="noreferrer">哔哩哔哩</a></div></div>
+        <div class="sidebar-info"><strong>壁纸盒</strong><span>v1.2.0</span><p>不打开 Wallpaper Engine，也能整理本地残留壁纸。</p><div class="support-links"><a href="https://github.com/SNP-LDN/wallpaper_box" target="_blank" rel="noreferrer">GitHub</a><a href="https://ifdian.net/album/6351ad746fdf11f1948e52540025c377" target="_blank" rel="noreferrer">爱发电</a><a href="https://space.bilibili.com/425424806/dynamic" target="_blank" rel="noreferrer">哔哩哔哩</a></div></div>
       </aside>
       <div class="content-area">
       <header class="topbar">
@@ -41,7 +41,7 @@
           </label>
           <label class="sort-control blur-switch"><input type="checkbox" id="apply-blur" checked /> 应用收藏夹模糊</label>
           <button class="button secondary" id="new-collection">＋ 新建收藏夹</button>
-          <button class="button secondary" id="choose-folder">选择文件夹</button>
+          <button class="button secondary" id="choose-folder">添加文件夹</button>
           <button class="button primary" id="refresh">↻ 刷新</button>
         </div>
       </header>
@@ -49,12 +49,13 @@
         <span id="wallpaper-count">请选择 Wallpaper 的保存目录</span>
         <span>识别 <code>preview.jpg / .png / .gif</code></span>
       </section>
+      <section class="source-filters" id="source-filters" hidden></section>
       <section class="wallpaper-grid" id="wallpaper-grid" aria-live="polite"></section>
       <section class="empty-state" id="empty-state" hidden>
         <div class="empty-icon">▧</div>
         <h2>这里还没有可展示的壁纸</h2>
         <p>请选择包含壁纸子文件夹的目录。每个壁纸文件夹需要含有 preview.jpg、preview.png 或 preview.gif。</p>
-        <button class="button primary" id="empty-choose">选择文件夹</button>
+        <button class="button primary" id="empty-choose">添加文件夹</button>
       </section>
       </div>
     </main>

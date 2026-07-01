@@ -2,6 +2,7 @@ const api = window.wallpaperLibrary;
 const elements = {
   path: document.querySelector('#library-path'), count: document.querySelector('#wallpaper-count'),
   grid: document.querySelector('#wallpaper-grid'), empty: document.querySelector('#empty-state'),
+  sourceFilters: document.querySelector('#source-filters'),
   choose: document.querySelector('#choose-folder'), refresh: document.querySelector('#refresh'),
   emptyChoose: document.querySelector('#empty-choose'), dialog: document.querySelector('#rename-dialog'),
   form: document.querySelector('#rename-form'), input: document.querySelector('#rename-input'),
@@ -13,6 +14,7 @@ const elements = {
   manageDialog: document.querySelector('#manage-collections-dialog'), manageList: document.querySelector('#manage-collection-list'), manageInput: document.querySelector('#manage-collection-input'), manageCreate: document.querySelector('#manage-create-collection')
   , manageBlur: document.querySelector('#manage-collection-blur'), applyBlur: document.querySelector('#apply-blur'), search: document.querySelector('#search-wallpapers'), openSettings: document.querySelector('#open-settings'), settingsDialog: document.querySelector('#settings-dialog'), background: document.querySelector('#setting-background'), theme: document.querySelector('#setting-theme'), opacity: document.querySelector('#setting-opacity'), fontSize: document.querySelector('#setting-font-size'), chooseBackground: document.querySelector('#choose-background'), backgroundLabel: document.querySelector('#background-label'), chooseBgm: document.querySelector('#choose-bgm'), chooseFont: document.querySelector('#choose-font'), bgmLabel: document.querySelector('#bgm-label'), fontLabel: document.querySelector('#font-label'), stopBgm: document.querySelector('#stop-bgm'), resetSettings: document.querySelector('#reset-settings'), openUserGuide: document.querySelector('#open-user-guide'), userGuideDialog: document.querySelector('#user-guide-dialog'), guideContent: document.querySelector('#guide-content'), checkUpdate: document.querySelector('#check-update'), installUpdate: document.querySelector('#install-update'), updateStatus: document.querySelector('#update-status')
 };
+let rootPaths = [];
 let rootPath = null;
 let pendingWallpaper = null;
 let wallpapers = [];
@@ -22,6 +24,7 @@ let customization = {};
 let bgm = new Audio();
 let userGuideLoaded = false;
 const selectedWallpaperIds = new Set();
+const selectedSourceRoots = new Set();
 let visibleWallpaperIds = [];
 
 function createBulkBar() {
@@ -49,6 +52,67 @@ function createBulkBar() {
 
 function showMessage(message) { elements.count.textContent = message; }
 
+function folderLabel(folderPath) {
+  return String(folderPath || '').split(/[\\/]/).filter(Boolean).at(-1) || folderPath;
+}
+
+async function loadCollectionsForRoots() {
+  const data = await api.getCollections(rootPath);
+  return data.collections || [];
+}
+
+function normalizeWallpaperCollections(items) {
+  return items;
+}
+
+function setRootPaths(paths) {
+  rootPaths = [...new Set((Array.isArray(paths) ? paths : [paths]).filter(Boolean))];
+  rootPath = rootPaths[0] || null;
+  [...selectedSourceRoots].forEach((path) => { if (!rootPaths.includes(path)) selectedSourceRoots.delete(path); });
+  updatePathLabel();
+  renderSourceFilters();
+}
+
+function updatePathLabel() {
+  if (!rootPaths.length) {
+    elements.path.textContent = '尚未选择文件夹';
+  } else if (rootPaths.length === 1) {
+    elements.path.textContent = rootPaths[0];
+  } else {
+    elements.path.textContent = `已添加 ${rootPaths.length} 个文件夹：${rootPaths.map(folderLabel).join('、')}`;
+  }
+}
+
+function renderSourceFilters() {
+  if (!elements.sourceFilters) return;
+  elements.sourceFilters.hidden = rootPaths.length <= 1;
+  elements.sourceFilters.replaceChildren();
+  if (rootPaths.length <= 1) return;
+  const all = document.createElement('button');
+  all.type = 'button';
+  all.textContent = '全部文件夹';
+  all.classList.toggle('active', selectedSourceRoots.size === 0);
+  all.onclick = () => {
+    selectedSourceRoots.clear();
+    renderSourceFilters();
+    renderWallpapers();
+  };
+  elements.sourceFilters.append(all, ...rootPaths.map((sourcePath) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = folderLabel(sourcePath);
+    button.title = sourcePath;
+    button.classList.toggle('active', selectedSourceRoots.has(sourcePath));
+    button.onclick = () => {
+      if (selectedSourceRoots.has(sourcePath)) selectedSourceRoots.delete(sourcePath);
+      else selectedSourceRoots.add(sourcePath);
+      renderSourceFilters();
+      renderWallpapers();
+    };
+    return button;
+  }));
+}
+
 function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   const units = ['KB', 'MB', 'GB', 'TB'];
@@ -61,6 +125,7 @@ function renderWallpapers() {
   const filter = elements.collectionFilter.value;
   const query = elements.search.value.trim().toLocaleLowerCase();
   const visible = wallpapers.filter((wallpaper) => {
+    if (selectedSourceRoots.size && !selectedSourceRoots.has(wallpaper.rootPath)) return false;
     if (query && !wallpaper.name.toLocaleLowerCase().includes(query)) return false;
     if (filter === 'favorite') return wallpaper.favorite;
     if (filter.startsWith('collection:')) return wallpaper.collectionIds.includes(filter.slice('collection:'.length));
@@ -165,7 +230,13 @@ async function addSelectedToCollection() {
   const collectionId = elements.bulkCollection.value;
   if (!selected.length || !collectionId) return;
   try {
-    await api.addManyToCollection({ rootPath, collectionId, folderPaths: selected.map((wallpaper) => wallpaper.folderPath) });
+    const grouped = Object.entries(selected.reduce((acc, wallpaper) => {
+      (acc[wallpaper.rootPath] ||= []).push(wallpaper);
+      return acc;
+    }, {}));
+    for (const [sourcePath, items] of grouped) {
+      await api.addManyToCollection({ rootPath: sourcePath, collectionId, folderPaths: items.map((wallpaper) => wallpaper.folderPath) });
+    }
     selectedWallpaperIds.clear();
     await refresh();
   } catch (error) {
@@ -176,10 +247,21 @@ async function addSelectedToCollection() {
 async function moveSelectedWallpapers() {
   const selected = getSelectedWallpapers();
   if (!selected.length) return;
-  if (!confirm(`确定要把已选择的 ${selected.length} 个壁纸文件夹移动到其他文件夹吗？`)) return;
+  const grouped = Object.entries(selected.reduce((acc, wallpaper) => {
+    (acc[wallpaper.rootPath] ||= []).push(wallpaper);
+    return acc;
+  }, {}));
+  const moveSummary = grouped.length === 1
+    ? `确定要移动“${folderLabel(grouped[0][0])}”内的 ${grouped[0][1].length} 个壁纸文件夹吗？`
+    : `将移动以下来源的壁纸文件夹：\n\n${grouped.map(([sourcePath, items]) => `- ${folderLabel(sourcePath)}：${items.length} 个`).join('\n')}\n\n确定继续吗？`;
+  if (!confirm(moveSummary)) return;
   try {
-    const result = await api.moveMany({ rootPath, folderPaths: selected.map((wallpaper) => wallpaper.folderPath) });
-    if (!result?.canceled) selectedWallpaperIds.clear();
+    let canceled = false;
+    for (const [sourcePath, items] of grouped) {
+      const result = await api.moveMany({ rootPath: sourcePath, folderPaths: items.map((wallpaper) => wallpaper.folderPath) });
+      if (result?.canceled) canceled = true;
+    }
+    if (!canceled) selectedWallpaperIds.clear();
     await refresh();
   } catch (error) {
     alert(`无法移动所选壁纸：${error.message}`);
@@ -187,13 +269,15 @@ async function moveSelectedWallpapers() {
 }
 
 async function refresh() {
-  if (!rootPath) return chooseFolder();
+  if (!rootPaths.length) return chooseFolder();
   const scrollTop = window.scrollY;
   elements.refresh.disabled = true;
   showMessage('正在读取本地壁纸…');
   try {
-    [wallpapers, { collections }] = await Promise.all([api.scan(rootPath), api.getCollections(rootPath)]);
+    [wallpapers, collections] = await Promise.all([api.scan(rootPaths), loadCollectionsForRoots()]);
+    wallpapers = normalizeWallpaperCollections(wallpapers);
     renderCollectionFilter();
+    renderSourceFilters();
     renderWallpapers();
     showMessage(`共找到 ${wallpapers.length} 个本地壁纸`);
   } catch (error) {
@@ -209,7 +293,7 @@ async function toggleFavorite(wallpaper, button) {
   button.classList.remove('heart-burst');
   void button.offsetWidth;
   button.classList.add('heart-burst');
-  try { await api.toggleFavorite({ rootPath, folderPath: wallpaper.folderPath }); setTimeout(refresh, 320); }
+  try { await api.toggleFavorite({ rootPath: wallpaper.rootPath, folderPath: wallpaper.folderPath }); setTimeout(refresh, 320); }
   catch (error) { alert(`无法更新喜欢状态：${error.message}`); }
 }
 
@@ -219,7 +303,7 @@ function renderCollectionDialog() {
     const label = document.createElement('label'); label.className = 'collection-option';
     const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = collectionWallpaper.collectionIds.includes(collection.id);
     checkbox.onchange = async () => {
-      try { await api.toggleCollection({ rootPath, folderPath: collectionWallpaper.folderPath, collectionId: collection.id }); await refresh(); collectionWallpaper = wallpapers.find((item) => item.folderPath === collectionWallpaper.folderPath); }
+      try { await api.toggleCollection({ rootPath: collectionWallpaper.rootPath, folderPath: collectionWallpaper.folderPath, collectionId: collection.id }); await refresh(); collectionWallpaper = wallpapers.find((item) => item.folderPath === collectionWallpaper.folderPath); }
       catch (error) { checkbox.checked = !checkbox.checked; alert(`无法更新收藏夹：${error.message}`); }
     };
     label.append(checkbox, document.createTextNode(collection.name)); return label;
@@ -229,7 +313,7 @@ function renderCollectionDialog() {
 
 function renderManageCollections() {
   elements.manageList.replaceChildren(...collections.map((collection) => {
-    const item = document.createElement('div'); item.className = 'collection-option'; item.innerHTML = `<span>${escapeHtml(collection.name)} · ${collection.wallpaperIds.length} 张壁纸${collection.blurPreviews ? ' · 模糊预览' : ''}</span><button type="button" class="delete-collection">删除</button>`; item.querySelector('button').onclick = async () => { if (confirm(`删除收藏夹“${collection.name}”？壁纸文件不会被删除。`)) { await api.deleteCollection({ rootPath, collectionId: collection.id }); await refresh(); renderManageCollections(); } }; return item;
+    const item = document.createElement('div'); item.className = 'collection-option'; item.innerHTML = `<span>${escapeHtml(collection.name)} · ${collection.wallpaperIds.length} 张壁纸${collection.blurPreviews ? ' · 模糊预览' : ''}</span><button type="button" class="delete-collection">删除</button>`; item.querySelector('button').onclick = async () => { if (confirm(`删除收藏夹“${collection.name}”？壁纸文件不会被删除。`)) { await api.deleteCollection({ collectionId: collection.id }); await refresh(); renderManageCollections(); } }; return item;
   }));
   if (!collections.length) elements.manageList.textContent = '还没有收藏夹。';
 }
@@ -240,7 +324,7 @@ async function createCollection() {
   try {
     const collection = await api.createCollection({ rootPath, name });
     collections.push(collection); renderCollectionFilter(); elements.newCollectionInput.value = '';
-    if (collectionWallpaper) { await api.toggleCollection({ rootPath, folderPath: collectionWallpaper.folderPath, collectionId: collection.id }); await refresh(); collectionWallpaper = wallpapers.find((item) => item.folderPath === collectionWallpaper.folderPath); renderCollectionDialog(); }
+    if (collectionWallpaper) { await api.toggleCollection({ rootPath: collectionWallpaper.rootPath, folderPath: collectionWallpaper.folderPath, collectionId: collection.id }); await refresh(); collectionWallpaper = wallpapers.find((item) => item.folderPath === collectionWallpaper.folderPath); renderCollectionDialog(); }
   } catch (error) { alert(`无法新建收藏夹：${error.message}`); }
 }
 async function createManagedCollection() {
@@ -252,19 +336,19 @@ async function createManagedCollection() {
 async function chooseFolder() {
   const selected = await api.chooseRoot();
   if (!selected) return;
-  rootPath = selected; elements.path.textContent = selected;
+  setRootPaths(selected);
   await refresh();
 }
 function openRename(wallpaper) { pendingWallpaper = wallpaper; elements.input.value = wallpaper.name; elements.dialog.showModal(); elements.input.select(); }
 async function removeWallpaper(wallpaper) {
   if (!confirm(`确定删除“${wallpaper.name}”吗？\n这会永久删除整个本地壁纸文件夹及其中所有文件。`)) return;
-  try { await api.remove({ rootPath, folderPath: wallpaper.folderPath }); await refresh(); }
+  try { await api.remove({ rootPath: wallpaper.rootPath, folderPath: wallpaper.folderPath }); await refresh(); }
   catch (error) { alert(`删除失败：${error.message}`); }
 }
 elements.form.addEventListener('submit', async (event) => {
   if (event.submitter?.value !== 'confirm') return;
   event.preventDefault();
-  try { await api.rename({ rootPath, folderPath: pendingWallpaper.folderPath, newName: elements.input.value }); elements.dialog.close(); await refresh(); }
+  try { await api.rename({ rootPath: pendingWallpaper.rootPath, folderPath: pendingWallpaper.folderPath, newName: elements.input.value }); elements.dialog.close(); await refresh(); }
   catch (error) { alert(`保存显示名称失败：${error.message}`); }
 });
 createBulkBar();
@@ -336,4 +420,4 @@ elements.openUserGuide.onclick = openUserGuide;
 [elements.dialog, elements.collectionDialog, elements.manageDialog, elements.settingsDialog, elements.userGuideDialog].forEach((dialog) => {
   dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
 });
-(async () => { customization = await api.getCustomization(); applyCustomization(); if (customization.bgmPath) { bgm.src = api.toFileUrl(customization.bgmPath); bgm.loop = true; } rootPath = await api.getRoot(); if (rootPath) { elements.path.textContent = rootPath; await refresh(); } else { elements.empty.hidden = false; } await openUserGuide(); })();
+(async () => { customization = await api.getCustomization(); applyCustomization(); if (customization.bgmPath) { bgm.src = api.toFileUrl(customization.bgmPath); bgm.loop = true; } setRootPaths(await api.getRoot()); if (rootPaths.length) { await refresh(); } else { elements.empty.hidden = false; } await openUserGuide(); })();
