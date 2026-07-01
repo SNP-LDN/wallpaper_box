@@ -1,6 +1,6 @@
 {
-  "version": "1.1.3",
-  "notes": "新增 Gitee 备用更新通知源，改善国内用户无法访问 GitHub 时收不到更新提示的问题。",
+  "version": "1.4.3",
+  "notes": "新增 Steam 创意工坊下架检测：支持选择检测范围、保存检测状态、设置检测间隔、显示进度条和完成提示；可区分可访问、疑似下架、需要登录、请求过快等状态，并可在可访问时使用 Steam 官方标题作为应用内显示名。",
   "github": "https://github.com/SNP-LDN/wallpaper_box/releases",
   "baidu": "https://pan.baidu.com/s/5_e1z8bEEHWcTm48az00-PA",
   "quark": "https://pan.quark.cn/s/1c8894a8bc1a"

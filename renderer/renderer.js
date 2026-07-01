@@ -11,7 +11,7 @@ const elements = {
   collectionList: document.querySelector('#collection-list'), collectionWallpaperName: document.querySelector('#collection-wallpaper-name'),
   newCollectionInput: document.querySelector('#new-collection-input'), createFromDialog: document.querySelector('#create-from-dialog'),
   layoutColumns: document.querySelector('#layout-columns'), sideNav: document.querySelector('#side-nav'), sidebarCollections: document.querySelector('#sidebar-collections'),
-  manageDialog: document.querySelector('#manage-collections-dialog'), manageList: document.querySelector('#manage-collection-list'), manageInput: document.querySelector('#manage-collection-input'), manageCreate: document.querySelector('#manage-create-collection')
+  manageDialog: document.querySelector('#manage-collections-dialog'), manageList: document.querySelector('#manage-collection-list'), manageInput: document.querySelector('#manage-collection-input'), manageCreate: document.querySelector('#manage-create-collection'), checkSteamStatus: document.querySelector('#check-steam-status')
   , manageBlur: document.querySelector('#manage-collection-blur'), applyBlur: document.querySelector('#apply-blur'), search: document.querySelector('#search-wallpapers'), openSettings: document.querySelector('#open-settings'), settingsDialog: document.querySelector('#settings-dialog'), background: document.querySelector('#setting-background'), theme: document.querySelector('#setting-theme'), opacity: document.querySelector('#setting-opacity'), fontSize: document.querySelector('#setting-font-size'), chooseBackground: document.querySelector('#choose-background'), backgroundLabel: document.querySelector('#background-label'), chooseBgm: document.querySelector('#choose-bgm'), chooseFont: document.querySelector('#choose-font'), bgmLabel: document.querySelector('#bgm-label'), fontLabel: document.querySelector('#font-label'), stopBgm: document.querySelector('#stop-bgm'), resetSettings: document.querySelector('#reset-settings'), openUserGuide: document.querySelector('#open-user-guide'), userGuideDialog: document.querySelector('#user-guide-dialog'), guideContent: document.querySelector('#guide-content'), checkUpdate: document.querySelector('#check-update'), installUpdate: document.querySelector('#install-update'), updateStatus: document.querySelector('#update-status')
 };
 let rootPaths = [];
@@ -25,7 +25,21 @@ let bgm = new Audio();
 let userGuideLoaded = false;
 const selectedWallpaperIds = new Set();
 const selectedSourceRoots = new Set();
+const steamStatusByFolder = new Map();
+const steamStatusCache = {};
 let visibleWallpaperIds = [];
+let steamCheckDelaySeconds = 10;
+const steamCheckStatuses = [
+  ['unchecked', '未检测'],
+  ['available', '已检测：没下架'],
+  ['unavailable', '已检测：疑似下架'],
+  ['login-required', '需要登录'],
+  ['rate-limited', '请求过快'],
+  ['error', '检测失败'],
+  ['skipped', '已跳过'],
+  ['unknown', '状态未知']
+];
+const defaultSteamCheckStatuses = new Set(['unchecked', 'unavailable', 'login-required', 'rate-limited', 'error', 'unknown']);
 
 function createBulkBar() {
   const statusRow = document.querySelector('.status-row');
@@ -50,10 +64,127 @@ function createBulkBar() {
   elements.bulkMove = bar.querySelector('#bulk-move');
 }
 
+function createSteamCheckDialog() {
+  const dialog = document.createElement('dialog');
+  dialog.id = 'steam-check-dialog';
+  dialog.innerHTML = `
+    <form method="dialog" id="steam-check-form">
+      <h2>选择检测范围</h2>
+      <p>只检测你选中的范围。每个 Steam 页面之间会休息 10 秒，减少被限流的概率。</p>
+      <div class="steam-check-grid">
+        <fieldset>
+          <legend>检测哪些壁纸</legend>
+          <label><input type="radio" name="steam-scope" value="visible" checked /> 当前列表</label>
+          <label><input type="radio" name="steam-scope" value="selected" /> 已选壁纸</label>
+          <label><input type="radio" name="steam-scope" value="all" /> 全部本地壁纸</label>
+        </fieldset>
+        <fieldset>
+          <legend>检测哪些文件夹</legend>
+          <div id="steam-check-roots" class="steam-check-options"></div>
+        </fieldset>
+        <fieldset>
+          <legend>检测哪些状态</legend>
+          <div id="steam-check-statuses" class="steam-check-options"></div>
+        </fieldset>
+      </div>
+      <label class="steam-delay-control">检测间隔
+        <input type="number" id="steam-check-delay" min="10" max="120" step="5" value="10" />
+        <span>秒 / 个页面</span>
+      </label>
+      <label class="steam-title-control">
+        <input type="checkbox" id="steam-check-rename" />
+        <span>检测到没下架时，使用 Steam 官方标题作为软件内显示名</span>
+      </label>
+      <p class="steam-check-summary" id="steam-check-summary"></p>
+      <div class="dialog-actions">
+        <button class="button secondary" value="cancel">取消</button>
+        <button class="button primary" value="confirm" id="steam-check-start">开始检测</button>
+      </div>
+    </form>
+  `;
+  document.body.append(dialog);
+  elements.steamCheckDialog = dialog;
+  elements.steamCheckForm = dialog.querySelector('#steam-check-form');
+  elements.steamCheckRoots = dialog.querySelector('#steam-check-roots');
+  elements.steamCheckStatuses = dialog.querySelector('#steam-check-statuses');
+  elements.steamCheckDelay = dialog.querySelector('#steam-check-delay');
+  elements.steamCheckRename = dialog.querySelector('#steam-check-rename');
+  elements.steamCheckSummary = dialog.querySelector('#steam-check-summary');
+  elements.steamCheckStart = dialog.querySelector('#steam-check-start');
+}
+
+function createSteamProgressDialog() {
+  const dialog = document.createElement('dialog');
+  dialog.id = 'steam-progress-dialog';
+  dialog.innerHTML = `
+    <form method="dialog">
+      <h2>正在检测 Steam 状态</h2>
+      <p id="steam-progress-text">准备开始...</p>
+      <progress id="steam-progress-bar" value="0" max="1"></progress>
+      <p class="steam-progress-note">检测过程中会按你选择的间隔休息，请保持软件打开。</p>
+    </form>
+  `;
+  document.body.append(dialog);
+  elements.steamProgressDialog = dialog;
+  elements.steamProgressText = dialog.querySelector('#steam-progress-text');
+  elements.steamProgressBar = dialog.querySelector('#steam-progress-bar');
+}
+
 function showMessage(message) { elements.count.textContent = message; }
 
 function folderLabel(folderPath) {
   return String(folderPath || '').split(/[\\/]/).filter(Boolean).at(-1) || folderPath;
+}
+
+function persistedSteamStatusKey(wallpaper) {
+  return `${wallpaper.rootPath}::${wallpaper.originalName}`;
+}
+
+function normalizeDelaySeconds(value) {
+  return Math.max(10, Math.min(Number(value) || 10, 120));
+}
+
+function rememberSteamStatus(wallpaper, result) {
+  if (!wallpaper || !result) return;
+  const saved = {
+    ...result,
+    rootPath: wallpaper.rootPath,
+    folderName: wallpaper.originalName,
+    checkedAt: Date.now()
+  };
+  steamStatusByFolder.set(wallpaper.folderPath, saved);
+  steamStatusCache[persistedSteamStatusKey(wallpaper)] = saved;
+}
+
+async function saveSteamStatusCache() {
+  await api.saveSteamStatusCache?.(steamStatusCache);
+}
+
+function loadSteamStatusesForWallpapers() {
+  steamStatusByFolder.clear();
+  wallpapers.forEach((wallpaper) => {
+    const status = steamStatusCache[persistedSteamStatusKey(wallpaper)];
+    if (status) steamStatusByFolder.set(wallpaper.folderPath, status);
+  });
+}
+
+function updateSteamProgress(checked, total) {
+  if (!elements.steamProgressDialog) return;
+  elements.steamProgressBar.max = Math.max(total, 1);
+  elements.steamProgressBar.value = Math.min(checked, total);
+  elements.steamProgressText.textContent = `正在检测：${checked} / ${total}`;
+}
+
+async function applyOfficialTitles(results, byFolder) {
+  let renamed = 0;
+  for (const result of results) {
+    if (result.status !== 'available' || !result.officialTitle || !result.folderPath) continue;
+    const wallpaper = byFolder.get(result.folderPath);
+    if (!wallpaper || wallpaper.name === result.officialTitle) continue;
+    await api.rename({ rootPath: wallpaper.rootPath, folderPath: wallpaper.folderPath, newName: result.officialTitle });
+    renamed += 1;
+  }
+  return renamed;
 }
 
 async function loadCollectionsForRoots() {
@@ -120,6 +251,22 @@ function formatSize(bytes) {
   return `${(bytes / (1024 ** index)).toFixed(index > 1 ? 1 : 0)} ${units[index - 1]}`;
 }
 
+function steamStatusText(status) {
+  if (!status) return '';
+  if (status.status === 'available') return 'Steam 可访问';
+  if (status.status === 'unavailable') return '疑似下架';
+  if (status.status === 'login-required') return '需要登录';
+  if (status.status === 'rate-limited') return '请求过快';
+  if (status.status === 'skipped') return '未检测';
+  if (status.status === 'error') return '检测失败';
+  return '状态未知';
+}
+
+function steamStatusTitle(status) {
+  if (!status) return '';
+  return [status.message, status.url].filter(Boolean).join('\n');
+}
+
 function renderWallpapers() {
   const sortBy = elements.sortBy.value;
   const filter = elements.collectionFilter.value;
@@ -175,6 +322,8 @@ function createCard(wallpaper, blurPreviews = false) {
   const card = document.createElement('article');
   card.className = `wallpaper-card ${blurPreviews ? 'preview-blurred' : ''}`;
   card.classList.toggle('is-selected', selectedWallpaperIds.has(wallpaper.id));
+  const steamStatus = steamStatusByFolder.get(wallpaper.folderPath);
+  if (steamStatus?.status) card.classList.add(`steam-${steamStatus.status}`);
   const preview = document.createElement('img');
   preview.src = api.toFileUrl(wallpaper.previewPath);
   preview.alt = wallpaper.name;
@@ -191,6 +340,16 @@ function createCard(wallpaper, blurPreviews = false) {
   };
   card.prepend(selector);
   card.querySelector('.preview-wrap').prepend(preview);
+  if (steamStatus) {
+    const badge = document.createElement('a');
+    badge.className = `steam-status-badge ${steamStatus.status || 'unknown'}`;
+    badge.href = steamStatus.url || `https://steamcommunity.com/sharedfiles/filedetails/?id=${encodeURIComponent(wallpaper.originalName)}`;
+    badge.target = '_blank';
+    badge.rel = 'noreferrer';
+    badge.textContent = steamStatusText(steamStatus);
+    badge.title = steamStatusTitle(steamStatus);
+    card.querySelector('.preview-wrap').append(badge);
+  }
   card.querySelector('.open').onclick = () => api.openFolder(wallpaper.folderPath);
   card.querySelector('.rename').onclick = () => openRename(wallpaper);
   card.querySelector('.delete').onclick = () => removeWallpaper(wallpaper);
@@ -209,6 +368,58 @@ function toggleSelected(wallpaperId, selected) {
 function getSelectedWallpapers() {
   const byId = new Map(wallpapers.map((wallpaper) => [wallpaper.id, wallpaper]));
   return [...selectedWallpaperIds].map((id) => byId.get(id)).filter(Boolean);
+}
+
+function getVisibleWallpapers() {
+  const byId = new Map(wallpapers.map((wallpaper) => [wallpaper.id, wallpaper]));
+  return visibleWallpaperIds.map((id) => byId.get(id)).filter(Boolean);
+}
+
+function steamStatusKey(wallpaper) {
+  return steamStatusByFolder.get(wallpaper.folderPath)?.status || 'unchecked';
+}
+
+function getSteamDialogTargets() {
+  const scope = elements.steamCheckForm.querySelector('[name="steam-scope"]:checked')?.value || 'visible';
+  const rootFilters = new Set([...elements.steamCheckRoots.querySelectorAll('input:checked')].map((input) => input.value));
+  const statusFilters = new Set([...elements.steamCheckStatuses.querySelectorAll('input:checked')].map((input) => input.value));
+  const base = scope === 'selected' ? getSelectedWallpapers() : scope === 'all' ? wallpapers : getVisibleWallpapers();
+  return base.filter((wallpaper) => {
+    if (rootFilters.size && !rootFilters.has(wallpaper.rootPath)) return false;
+    return statusFilters.has(steamStatusKey(wallpaper));
+  });
+}
+
+function updateSteamCheckSummary() {
+  const targets = getSteamDialogTargets();
+  const delaySeconds = normalizeDelaySeconds(elements.steamCheckDelay?.value);
+  const seconds = Math.max(0, (targets.length - 1) * delaySeconds);
+  elements.steamCheckSummary.textContent = targets.length
+    ? `将检测 ${targets.length} 个壁纸，预计至少 ${Math.ceil(seconds)} 秒。`
+    : '当前条件下没有需要检测的壁纸。';
+  elements.steamCheckStart.disabled = targets.length === 0;
+}
+
+function renderSteamCheckDialog() {
+  const selectedCount = getSelectedWallpapers().length;
+  const selectedScope = elements.steamCheckForm.querySelector('[value="selected"]');
+  selectedScope.disabled = selectedCount === 0;
+  selectedScope.parentElement.title = selectedCount ? '' : '当前没有已选壁纸';
+  elements.steamCheckRoots.replaceChildren(...rootPaths.map((sourcePath) => {
+    const label = document.createElement('label');
+    const checked = selectedSourceRoots.size === 0 || selectedSourceRoots.has(sourcePath);
+    label.innerHTML = `<input type="checkbox" value="${escapeHtml(sourcePath)}" ${checked ? 'checked' : ''} /> <span>${escapeHtml(folderLabel(sourcePath))}</span>`;
+    label.title = sourcePath;
+    return label;
+  }));
+  elements.steamCheckStatuses.replaceChildren(...steamCheckStatuses.map(([value, labelText]) => {
+    const label = document.createElement('label');
+    const count = wallpapers.filter((wallpaper) => steamStatusKey(wallpaper) === value).length;
+    label.innerHTML = `<input type="checkbox" value="${value}" ${defaultSteamCheckStatuses.has(value) ? 'checked' : ''} /> <span>${labelText} (${count})</span>`;
+    return label;
+  }));
+  elements.steamCheckDelay.value = steamCheckDelaySeconds;
+  updateSteamCheckSummary();
 }
 
 function updateBulkBar() {
@@ -276,6 +487,7 @@ async function refresh() {
   try {
     [wallpapers, collections] = await Promise.all([api.scan(rootPaths), loadCollectionsForRoots()]);
     wallpapers = normalizeWallpaperCollections(wallpapers);
+    loadSteamStatusesForWallpapers();
     renderCollectionFilter();
     renderSourceFilters();
     renderWallpapers();
@@ -285,6 +497,115 @@ async function refresh() {
     showMessage(`无法读取该目录：${error.message}`);
   } finally { elements.refresh.disabled = false; }
   requestAnimationFrame(() => window.scrollTo({ top: scrollTop }));
+}
+
+async function checkSteamStatuses() {
+  const byId = new Map(wallpapers.map((wallpaper) => [wallpaper.id, wallpaper]));
+  const selected = getSelectedWallpapers();
+  const targets = selected.length
+    ? selected
+    : visibleWallpaperIds.map((id) => byId.get(id)).filter(Boolean);
+  if (!targets.length) return;
+  const delaySeconds = 10;
+  const scopeText = selected.length ? '已选壁纸' : '当前列表';
+  const expectedSeconds = Math.max(0, (targets.length - 1) * delaySeconds);
+  if (!confirm(`将检测 ${scopeText}中的 ${targets.length} 个 Steam 页面。\n\n每次请求之间会休息 ${delaySeconds} 秒，预计至少 ${Math.ceil(expectedSeconds)} 秒。是否开始？`)) return;
+  const previousLabel = elements.checkSteamStatus.textContent;
+  elements.checkSteamStatus.disabled = true;
+  elements.refresh.disabled = true;
+  const stopProgress = api.onSteamCheckProgress?.((progress) => {
+    if (!progress) return;
+    if (progress.result?.folderPath) steamStatusByFolder.set(progress.result.folderPath, progress.result);
+    showMessage(`正在检测 Steam 状态：${progress.checked} / ${progress.total}`);
+    renderWallpapers();
+  });
+  try {
+    showMessage(`正在检测 Steam 状态：0 / ${targets.length}`);
+    const results = await api.checkSteamStatus({
+      delayMs: delaySeconds * 1000,
+      items: targets.map((wallpaper) => ({ rootPath: wallpaper.rootPath, folderPath: wallpaper.folderPath }))
+    });
+    results.forEach((result) => {
+      if (result.folderPath) steamStatusByFolder.set(result.folderPath, result);
+    });
+    renderWallpapers();
+    const unavailable = results.filter((result) => result.status === 'unavailable').length;
+    const available = results.filter((result) => result.status === 'available').length;
+    const loginRequired = results.filter((result) => result.status === 'login-required').length;
+    const rateLimited = results.filter((result) => result.status === 'rate-limited').length;
+    const failed = results.filter((result) => result.status === 'error').length;
+    showMessage(`Steam 检测完成：可访问 ${available} 个，疑似下架 ${unavailable} 个，需要登录 ${loginRequired} 个，请求过快 ${rateLimited} 个，失败 ${failed} 个`);
+  } catch (error) {
+    showMessage(`Steam 检测失败：${error.message}`);
+  } finally {
+    if (stopProgress) stopProgress();
+    elements.checkSteamStatus.disabled = false;
+    elements.refresh.disabled = false;
+    elements.checkSteamStatus.textContent = previousLabel;
+  }
+}
+
+function openSteamCheckDialog() {
+  if (!wallpapers.length) {
+    showMessage('没有可检测的壁纸。');
+    return;
+  }
+  renderSteamCheckDialog();
+  elements.steamCheckDialog.showModal();
+}
+
+async function runSteamCheck(targets, delaySeconds = 10, useOfficialTitles = false) {
+  if (!targets.length) return;
+  const crawlDelaySeconds = normalizeDelaySeconds(delaySeconds);
+  const byFolder = new Map(targets.map((wallpaper) => [wallpaper.folderPath, wallpaper]));
+  const previousLabel = elements.checkSteamStatus.textContent;
+  elements.checkSteamStatus.disabled = true;
+  elements.refresh.disabled = true;
+  updateSteamProgress(0, targets.length);
+  elements.steamProgressDialog.showModal();
+  const stopProgress = api.onSteamCheckProgress?.((progress) => {
+    if (!progress) return;
+    if (progress.result?.folderPath) {
+      rememberSteamStatus(byFolder.get(progress.result.folderPath), progress.result);
+      saveSteamStatusCache().catch(() => {});
+    }
+    showMessage(`正在检测 Steam 状态：${progress.checked} / ${progress.total}`);
+    updateSteamProgress(progress.checked, progress.total);
+    renderWallpapers();
+  });
+  try {
+    showMessage(`正在检测 Steam 状态：0 / ${targets.length}`);
+    const results = await api.checkSteamStatus({
+      delayMs: crawlDelaySeconds * 1000,
+      items: targets.map((wallpaper) => ({ rootPath: wallpaper.rootPath, folderPath: wallpaper.folderPath }))
+    });
+    results.forEach((result) => {
+      if (result.folderPath) rememberSteamStatus(byFolder.get(result.folderPath), result);
+    });
+    await saveSteamStatusCache();
+    const renamed = useOfficialTitles ? await applyOfficialTitles(results, byFolder) : 0;
+    if (renamed) {
+      await refresh();
+    }
+    renderWallpapers();
+    const unavailable = results.filter((result) => result.status === 'unavailable').length;
+    const available = results.filter((result) => result.status === 'available').length;
+    const loginRequired = results.filter((result) => result.status === 'login-required').length;
+    const rateLimited = results.filter((result) => result.status === 'rate-limited').length;
+    const failed = results.filter((result) => result.status === 'error').length;
+    const summary = `Steam 检测完成：可访问 ${available} 个，疑似下架 ${unavailable} 个，需要登录 ${loginRequired} 个，请求过快 ${rateLimited} 个，失败 ${failed} 个，已更新标题 ${renamed} 个`;
+    showMessage(summary);
+    alert(summary);
+  } catch (error) {
+    showMessage(`Steam 检测失败：${error.message}`);
+    alert(`Steam 检测失败：${error.message}`);
+  } finally {
+    if (stopProgress) stopProgress();
+    elements.steamProgressDialog.close();
+    elements.checkSteamStatus.disabled = false;
+    elements.refresh.disabled = false;
+    elements.checkSteamStatus.textContent = previousLabel;
+  }
 }
 
 async function toggleFavorite(wallpaper, button) {
@@ -352,7 +673,26 @@ elements.form.addEventListener('submit', async (event) => {
   catch (error) { alert(`保存显示名称失败：${error.message}`); }
 });
 createBulkBar();
+createSteamCheckDialog();
+createSteamProgressDialog();
 elements.choose.onclick = chooseFolder; elements.emptyChoose.onclick = chooseFolder; elements.refresh.onclick = refresh;
+elements.checkSteamStatus.onclick = openSteamCheckDialog;
+elements.steamCheckForm.onchange = updateSteamCheckSummary;
+elements.steamCheckDelay.oninput = () => {
+  steamCheckDelaySeconds = normalizeDelaySeconds(elements.steamCheckDelay.value);
+  updateSteamCheckSummary();
+};
+elements.steamCheckDelay.onblur = () => { elements.steamCheckDelay.value = normalizeDelaySeconds(elements.steamCheckDelay.value); };
+elements.steamCheckForm.addEventListener('submit', async (event) => {
+  if (event.submitter?.value !== 'confirm') return;
+  event.preventDefault();
+  const targets = getSteamDialogTargets();
+  steamCheckDelaySeconds = normalizeDelaySeconds(elements.steamCheckDelay.value);
+  const useOfficialTitles = elements.steamCheckRename.checked;
+  elements.steamCheckDelay.value = steamCheckDelaySeconds;
+  elements.steamCheckDialog.close();
+  await runSteamCheck(targets, steamCheckDelaySeconds, useOfficialTitles);
+});
 elements.sortBy.onchange = renderWallpapers;
 elements.collectionFilter.onchange = () => { renderWallpapers(); renderSidebar(); };
 elements.layoutColumns.onchange = renderWallpapers;
@@ -417,7 +757,15 @@ function markdownToHtml(markdown) {
 }
 async function openUserGuide() { if (!userGuideLoaded) { elements.guideContent.innerHTML = markdownToHtml(await api.getUserGuide()); userGuideLoaded = true; } elements.userGuideDialog.showModal(); }
 elements.openUserGuide.onclick = openUserGuide;
-[elements.dialog, elements.collectionDialog, elements.manageDialog, elements.settingsDialog, elements.userGuideDialog].forEach((dialog) => {
+[elements.dialog, elements.collectionDialog, elements.manageDialog, elements.settingsDialog, elements.userGuideDialog, elements.steamCheckDialog].forEach((dialog) => {
   dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
 });
-(async () => { customization = await api.getCustomization(); applyCustomization(); if (customization.bgmPath) { bgm.src = api.toFileUrl(customization.bgmPath); bgm.loop = true; } setRootPaths(await api.getRoot()); if (rootPaths.length) { await refresh(); } else { elements.empty.hidden = false; } await openUserGuide(); })();
+(async () => {
+  customization = await api.getCustomization();
+  Object.assign(steamStatusCache, await api.getSteamStatusCache?.() || {});
+  applyCustomization();
+  if (customization.bgmPath) { bgm.src = api.toFileUrl(customization.bgmPath); bgm.loop = true; }
+  setRootPaths(await api.getRoot());
+  if (rootPaths.length) { await refresh(); } else { elements.empty.hidden = false; }
+  await openUserGuide();
+})();

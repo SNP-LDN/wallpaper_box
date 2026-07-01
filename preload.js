@@ -10,6 +10,14 @@ contextBridge.exposeInMainWorld('wallpaperLibrary', {
   getRoot: () => ipcRenderer.invoke('library:get-root'),
   chooseRoot: () => ipcRenderer.invoke('library:choose-root'),
   scan: (rootPath) => ipcRenderer.invoke('library:scan', rootPath),
+  getSteamStatusCache: () => ipcRenderer.invoke('library:get-steam-status-cache'),
+  saveSteamStatusCache: (data) => ipcRenderer.invoke('library:save-steam-status-cache', data),
+  checkSteamStatus: (data) => ipcRenderer.invoke('library:check-steam-status', data),
+  onSteamCheckProgress: (callback) => {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on('library:steam-check-progress', listener);
+    return () => ipcRenderer.removeListener('library:steam-check-progress', listener);
+  },
   rename: (data) => ipcRenderer.invoke('library:rename', data),
   remove: (data) => ipcRenderer.invoke('library:delete', data),
   moveMany: (data) => ipcRenderer.invoke('library:move-many', data),

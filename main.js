@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+﻿const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -10,6 +10,10 @@ const DOWNLOAD_LINKS = {
   quark: 'https://pan.quark.cn/s/1c8894a8bc1a'
 };
 const FALLBACK_UPDATE_URL = 'https://gitee.com/SNP-LDN/wallpaper_box/raw/master/latest.json';
+const STEAM_WORKSHOP_URL = 'https://steamcommunity.com/sharedfiles/filedetails/?id=';
+const STEAM_CHECK_DELAY_MS = 10000;
+const STEAM_CHECK_MIN_DELAY_MS = 10000;
+const STEAM_CHECK_MAX_DELAY_MS = 120000;
 let mainWindow = null;
 let manualUpdateCheck = false;
 let updateReadyToInstall = false;
@@ -49,6 +53,106 @@ function normalizeLibraryRoots(settings) {
 
 function wallpaperKey(rootPath, folderName) {
   return `${rootPath}::${folderName}`;
+}
+
+function steamStatusKey(rootPath, folderName) {
+  return wallpaperKey(rootPath, folderName);
+}
+
+function normalizeSteamStatusCache(settings) {
+  return settings.steamStatusByWallpaper || {};
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getWorkshopIdFromFolder(folderPath) {
+  const folderName = path.basename(folderPath || '');
+  return /^\d+$/.test(folderName) ? folderName : null;
+}
+
+function classifySteamWorkshopPage(html) {
+  const content = String(html || '').toLowerCase();
+  if (content.includes('you must be logged in to view this item')) {
+    return 'login-required';
+  }
+  if (content.includes('too many requests') || content.includes('you\'ve made too many requests recently')) {
+    return 'rate-limited';
+  }
+  if (
+    content.includes('there was a problem accessing the item') ||
+    content.includes('an error was encountered while processing your request') ||
+    content.includes('this item is either marked as hidden') ||
+    content.includes('the item is either marked as hidden')
+  ) {
+    return 'unavailable';
+  }
+  if (
+    content.includes('subscribeitembtn') ||
+    content.includes('workshopitemtitle') ||
+    content.includes('workshop item')
+  ) {
+    return 'available';
+  }
+  return 'unknown';
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_match, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_match, code) => String.fromCharCode(parseInt(code, 16)));
+}
+
+function extractWorkshopTitle(html) {
+  const match = String(html || '').match(/<div[^>]*class=["'][^"']*\bworkshopItemTitle\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
+  if (!match) return null;
+  const title = decodeHtmlEntities(match[1].replace(/<[^>]*>/g, '')).trim();
+  return title || null;
+}
+
+async function checkSteamWorkshopItem(itemId) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  const url = `${STEAM_WORKSHOP_URL}${itemId}&l=english`;
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': `WallpaperBox/${app.getVersion()} (+local availability check)`
+      }
+    });
+    const html = await response.text();
+    const pageStatus = classifySteamWorkshopPage(html);
+    const officialTitle = extractWorkshopTitle(html);
+    const base = { itemId, url, officialTitle };
+    if (response.status === 429 || pageStatus === 'rate-limited') {
+      return { ...base, status: 'rate-limited', message: 'Working...' };
+    }
+    if (!response.ok && pageStatus !== 'unavailable') {
+      return { ...base, status: 'error', message: `Steam returned HTTP ${response.status}` };
+    }
+    if (pageStatus === 'available') {
+      return { ...base, status: 'available', message: 'Working...' };
+    }
+    if (pageStatus === 'unavailable') {
+      return { ...base, status: 'unavailable', message: 'Working...' };
+    }
+    if (pageStatus === 'login-required') {
+      return { ...base, status: 'login-required', message: 'Working...' };
+    }
+    return { ...base, status: 'unknown', message: 'Working...' };
+  } catch (error) {
+    const aborted = error?.name === 'AbortError';
+    return { itemId, url, status: 'error', message: aborted ? 'Request timed out.' : error.message };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function getGlobalCollections(settings) {
@@ -197,7 +301,7 @@ async function moveFolder(sourcePath, destinationPath) {
 
 function createWindow() {
   const window = new BrowserWindow({
-    title: '壁纸盒',
+    title: 'Choose folder',
     icon: path.join(__dirname, 'assets', 'icon.ico'),
     width: 1240,
     height: 820,
@@ -246,7 +350,7 @@ async function showDownloadLinksDialog({ title, message, detail, type = 'info' }
     title,
     message,
     detail,
-    buttons: ['GitHub', '百度网盘', '夸克云', '关闭'],
+    buttons: ['GitHub', 'Baidu', 'Quark', 'Close'],
     defaultId: 0,
     cancelId: 3
   });
@@ -262,92 +366,74 @@ async function checkFallbackUpdate({ silent = false } = {}) {
     const update = await response.json();
     const latestVersion = update.version;
     if (latestVersion && compareVersions(latestVersion, app.getVersion()) > 0) {
-      sendUpdateStatus({ state: 'available', version: latestVersion, message: `发现新版本 v${latestVersion}` });
-      await showDownloadLinksDialog({
-        title: '发现新版本',
-        message: `发现新版本 v${latestVersion}`,
-        detail: update.notes || '请选择一个下载入口手动下载新版。'
-      });
-      return { state: 'available', version: latestVersion };
+      const status = { state: 'available', version: latestVersion, message: `New version v${latestVersion} is available.` };
+      sendUpdateStatus(status);
+      if (!silent) await showDownloadLinksDialog({ title: 'Choose folder', message: status.message, detail: update.notes || 'Choose a download source.' });
+      return status;
     }
-    const status = { state: 'not-available', message: '当前已经是最新版本。' };
+    const status = { state: 'not-available', message: 'Working...' };
     sendUpdateStatus(status);
-    if (!silent) dialog.showMessageBox(mainWindow, { type: 'info', title: '检查更新', message: status.message });
+    if (!silent) dialog.showMessageBox(mainWindow, { type: 'info', title: 'Choose folder', message: status.message });
     return status;
   } catch (error) {
-    const status = { state: 'error', message: '备用更新源连接失败，请稍后重试或手动打开下载链接。' };
+    const status = { state: 'error', message: 'Working...' };
     sendUpdateStatus(status);
-    if (!silent) {
-      await showDownloadLinksDialog({
-        type: 'error',
-        title: '检查更新失败',
-        message: status.message,
-        detail: `${error.message}\n\n你也可以通过下面的链接手动下载新版。`
-      });
-    }
+    if (!silent) await showDownloadLinksDialog({ type: 'error', title: 'Choose folder', message: status.message, detail: error.message });
     return status;
   }
 }
 
 function setupAutoUpdater() {
   if (isPortableBuild()) {
-    sendUpdateStatus({ state: 'portable', message: '便携版不支持应用内更新，请下载新版便携版或安装版。' });
+    sendUpdateStatus({ state: 'portable', message: 'Working...' });
     return;
   }
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
 
   autoUpdater.on('checking-for-update', () => {
-    sendUpdateStatus({ state: 'checking', message: '正在检查更新...' });
+    sendUpdateStatus({ state: 'checking', message: 'Working...' });
   });
 
   autoUpdater.on('update-available', async (info) => {
-    sendUpdateStatus({ state: 'available', version: info.version, message: `发现新版本 v${info.version}` });
+    sendUpdateStatus({ state: 'available', version: info.version, message: `New version v${info.version} is available.` });
     const result = await dialog.showMessageBox(mainWindow, {
       type: 'info',
-      title: '发现新版本',
-      message: `发现新版本 v${info.version}`,
-      detail: '安装版可以在应用内下载并安装更新。也可以选择网盘链接手动下载。',
-      buttons: ['应用内下载', 'GitHub', '百度网盘', '夸克云', '稍后'],
+      title: 'Choose folder',
+      message: `New version v${info.version} is available.`,
+      detail: 'You can download it in app or use a manual download link.',
+      buttons: ['Download', 'GitHub', 'Baidu', 'Quark', 'Later'],
       defaultId: 0,
       cancelId: 4
     });
     if (result.response === 0) {
-      sendUpdateStatus({ state: 'downloading', version: info.version, message: '正在下载更新...' });
+      sendUpdateStatus({ state: 'downloading', version: info.version, message: 'Working...' });
       autoUpdater.downloadUpdate();
-    } else if (result.response === 1) {
-      shell.openExternal(DOWNLOAD_LINKS.github);
-    } else if (result.response === 2) {
-      shell.openExternal(DOWNLOAD_LINKS.baidu);
-    } else if (result.response === 3) {
-      shell.openExternal(DOWNLOAD_LINKS.quark);
-    }
+    } else if (result.response === 1) shell.openExternal(DOWNLOAD_LINKS.github);
+    else if (result.response === 2) shell.openExternal(DOWNLOAD_LINKS.baidu);
+    else if (result.response === 3) shell.openExternal(DOWNLOAD_LINKS.quark);
   });
 
   autoUpdater.on('update-not-available', () => {
-    const status = { state: 'not-available', message: '当前已经是最新版本。' };
+    const status = { state: 'not-available', message: 'Working...' };
     sendUpdateStatus(status);
-    if (manualUpdateCheck) dialog.showMessageBox(mainWindow, { type: 'info', title: '检查更新', message: status.message });
+    if (manualUpdateCheck) dialog.showMessageBox(mainWindow, { type: 'info', title: 'Choose folder', message: status.message });
     manualUpdateCheck = false;
   });
 
   autoUpdater.on('download-progress', (progress) => {
-    sendUpdateStatus({
-      state: 'downloading',
-      percent: progress.percent,
-      message: `正在下载更新... ${Math.round(progress.percent)}%`
-    });
+    sendUpdateStatus({ state: 'downloading', percent: progress.percent, message: `Downloading update... ${Math.round(progress.percent)}%` });
   });
 
   autoUpdater.on('update-downloaded', async (info) => {
     updateReadyToInstall = true;
-    sendUpdateStatus({ state: 'downloaded', version: info.version, message: '更新已下载，重启后即可安装。' });
+    sendUpdateStatus({ state: 'downloaded', version: info.version, message: 'Working...' });
     const result = await dialog.showMessageBox(mainWindow, {
       type: 'info',
-      title: '更新已准备好',
-      message: `v${info.version} 已下载完成`,
-      detail: '是否现在重启应用并安装更新？',
-      buttons: ['立即重启安装', '稍后'],
+      title: 'Choose folder',
+      message: `v${info.version} has been downloaded.`,
+      detail: 'Restart now and install the update?',
+      buttons: ['Restart and install', 'Later'],
       defaultId: 0,
       cancelId: 1
     });
@@ -356,25 +442,8 @@ function setupAutoUpdater() {
 
   autoUpdater.on('error', async (error) => {
     manualUpdateCheck = false;
-    if (isMissingUpdateMetadataError(error)) {
-      const status = { state: 'error', message: '自动更新文件未上传，请通过下载链接获取新版。' };
-      sendUpdateStatus(status);
-      const fallbackStatus = await checkFallbackUpdate({ silent: true });
-      if (fallbackStatus.state === 'available') return;
-      await showDownloadLinksDialog({
-        title: '无法自动更新',
-        message: '没有找到自动更新文件 latest.yml',
-        detail: '当前 GitHub Release 缺少安装版自动更新所需的 latest.yml 文件，应用内自动更新暂时不可用。你可以通过下面的链接手动下载新版。'
-      });
-      return;
-    }
-    sendUpdateStatus({ state: 'error', message: `检查更新失败：${error.message}` });
-    await showDownloadLinksDialog({
-      type: 'error',
-      title: '检查更新失败',
-      message: '检查更新时遇到问题',
-      detail: `${error.message}\n\n你也可以通过下面的链接手动下载新版。`
-    });
+    sendUpdateStatus({ state: 'error', message: `Update check failed: ${error.message}` });
+    await showDownloadLinksDialog({ type: 'error', title: 'Choose folder', message: 'Working...', detail: error.message });
   });
 }
 
@@ -383,7 +452,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle('library:choose-root', async () => {
     const result = await dialog.showOpenDialog({
-      title: '选择 Wallpaper 保存目录',
+      title: 'Choose folder',
       properties: ['openDirectory', 'createDirectory', 'multiSelections']
     });
     if (result.canceled || !result.filePaths[0]) return null;
@@ -398,13 +467,65 @@ app.whenReady().then(() => {
     return Array.isArray(rootPath) ? scanLibraries(rootPath) : scanLibrary(rootPath);
   });
 
+  ipcMain.handle('library:get-steam-status-cache', async () => normalizeSteamStatusCache(await getSettings()));
+
+  ipcMain.handle('library:save-steam-status-cache', async (_event, statusCache) => {
+    const settings = await getSettings();
+    settings.steamStatusByWallpaper = statusCache && typeof statusCache === 'object' ? statusCache : {};
+    await saveSettings(settings);
+    return settings.steamStatusByWallpaper;
+  });
+
+  ipcMain.handle('library:check-steam-status', async (event, { items, delayMs } = {}) => {
+    const targets = Array.isArray(items) ? items : [];
+    const crawlDelay = Math.max(STEAM_CHECK_MIN_DELAY_MS, Math.min(Number(delayMs) || STEAM_CHECK_DELAY_MS, STEAM_CHECK_MAX_DELAY_MS));
+    const results = [];
+    for (let index = 0; index < targets.length; index += 1) {
+      const target = targets[index] || {};
+      const { rootPath, folderPath } = target;
+      let result;
+      if (!rootPath || !folderPath || !isInsideRoot(rootPath, folderPath) || path.dirname(folderPath) !== rootPath) {
+        result = { folderPath, status: 'error', message: 'Working...' };
+      } else {
+        const itemId = getWorkshopIdFromFolder(folderPath);
+        if (!itemId) {
+          result = { folderPath, status: 'skipped', message: 'Working...' };
+        } else {
+          result = { folderPath, ...(await checkSteamWorkshopItem(itemId)) };
+        }
+      }
+      results.push(result);
+      event.sender.send('library:steam-check-progress', {
+        checked: index + 1,
+        total: targets.length,
+        result
+      });
+      if (index < targets.length - 1) await sleep(crawlDelay);
+    }
+    const settings = await getSettings();
+    const statusCache = normalizeSteamStatusCache(settings);
+    results.forEach((result) => {
+      const matched = targets.find((target) => target.folderPath === result.folderPath);
+      if (!matched?.rootPath || !result.folderPath) return;
+      statusCache[steamStatusKey(matched.rootPath, path.basename(result.folderPath))] = {
+        ...result,
+        rootPath: matched.rootPath,
+        folderName: path.basename(result.folderPath),
+        checkedAt: Date.now()
+      };
+    });
+    settings.steamStatusByWallpaper = statusCache;
+    await saveSettings(settings);
+    return results;
+  });
+
   ipcMain.handle('library:rename', async (_event, { rootPath, folderPath, newName }) => {
     const cleanName = String(newName || '').trim();
     if (!cleanName || cleanName.length > 100) {
-      throw new Error('请输入 1 到 100 个字符的显示名称。');
+      throw new Error('Invalid operation.');
     }
     if (!isInsideRoot(rootPath, folderPath) || path.dirname(folderPath) !== rootPath) {
-      throw new Error('只能修改当前壁纸目录中一级文件夹的显示名称。');
+      throw new Error('Invalid operation.');
     }
     const settings = await getSettings();
     const originalName = path.basename(folderPath);
@@ -419,7 +540,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle('library:delete', async (_event, { rootPath, folderPath }) => {
     if (!isInsideRoot(rootPath, folderPath) || path.dirname(folderPath) !== rootPath) {
-      throw new Error('只能删除当前壁纸目录中的一级文件夹。');
+      throw new Error('Invalid operation.');
     }
     await fs.rm(folderPath, { recursive: true, force: true, maxRetries: 2 });
     const settings = await getSettings();
@@ -445,20 +566,20 @@ app.whenReady().then(() => {
     if (!rootPath || !pathsToMove.length) return { moved: 0 };
     for (const folderPath of pathsToMove) {
       if (!isInsideRoot(rootPath, folderPath) || path.dirname(folderPath) !== rootPath) {
-        throw new Error('只能移动当前壁纸目录中的一级壁纸文件夹。');
+        throw new Error('Invalid operation.');
       }
     }
     const result = await dialog.showOpenDialog({
-      title: '选择要移动到的文件夹',
+      title: 'Choose folder',
       properties: ['openDirectory', 'createDirectory']
     });
     if (result.canceled || !result.filePaths[0]) return { moved: 0, canceled: true };
     const destinationRoot = result.filePaths[0];
     if (path.resolve(destinationRoot) === path.resolve(rootPath)) {
-      throw new Error('请选择不同的目标文件夹。');
+      throw new Error('Invalid operation.');
     }
     if (pathsToMove.some((folderPath) => isSameOrInside(folderPath, destinationRoot))) {
-      throw new Error('目标文件夹不能在已选择的壁纸文件夹里面。');
+      throw new Error('Invalid operation.');
     }
     let moved = 0;
     const movedNames = [];
@@ -493,9 +614,9 @@ app.whenReady().then(() => {
 
   ipcMain.handle('collections:create', async (_event, { rootPath, name, blurPreviews }) => {
     const cleanName = String(name || '').trim();
-    if (!cleanName || cleanName.length > 50) throw new Error('收藏夹名称需要为 1 到 50 个字符。');
+    if (!cleanName || cleanName.length > 50) throw new Error('Invalid operation.');
     const data = await updateCollections((collections) => {
-      if (collections.some((collection) => collection.name === cleanName)) throw new Error('已有同名收藏夹。');
+      if (collections.some((collection) => collection.name === cleanName)) throw new Error('Invalid operation.');
       collections.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: cleanName, wallpaperIds: [], blurPreviews: Boolean(blurPreviews) });
     });
     return data.collections.at(-1);
@@ -514,10 +635,10 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('app:choose-media', async (_event, type) => {
     const filters = type === 'font'
-      ? [{ name: '字体', extensions: ['ttf', 'otf', 'woff', 'woff2'] }]
+      ? [{ name: 'Files', extensions: ['ttf', 'otf', 'woff', 'woff2'] }]
       : type === 'image'
-        ? [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif'] }]
-        : [{ name: '音频', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'flac'] }];
+        ? [{ name: 'Files', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif'] }]
+        : [{ name: 'Files', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'flac'] }];
     const result = await dialog.showOpenDialog({ properties: ['openFile'], filters });
     return result.canceled ? null : result.filePaths[0];
   });
@@ -526,7 +647,7 @@ app.whenReady().then(() => {
   ipcMain.handle('app:check-update', async (_event, manual = true) => {
     manualUpdateCheck = Boolean(manual);
     if (isPortableBuild()) {
-      const status = { state: 'checking', message: '正在检查备用更新源...' };
+      const status = { state: 'checking', message: 'Working...' };
       sendUpdateStatus(status);
       if (manualUpdateCheck) {
         await checkFallbackUpdate({ silent: false });
@@ -535,12 +656,12 @@ app.whenReady().then(() => {
       return status;
     }
     if (!app.isPackaged) {
-      const status = { state: 'dev', message: '开发模式下不会检查线上更新。' };
+      const status = { state: 'dev', message: 'Update checks are disabled in development mode.' };
       sendUpdateStatus(status);
       return status;
     }
     await autoUpdater.checkForUpdates();
-    return { state: 'checking', message: '正在检查更新...' };
+    return { state: 'checking', message: 'Working...' };
   });
 
   ipcMain.handle('app:install-update', async () => {
@@ -550,7 +671,7 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('collections:toggle-favorite', async (_event, { rootPath, folderPath }) => {
-    if (!isInsideRoot(rootPath, folderPath)) throw new Error('壁纸不属于当前目录。');
+    if (!isInsideRoot(rootPath, folderPath)) throw new Error('Invalid operation.');
     const originalName = path.basename(folderPath);
     const data = await updateLibraryData(rootPath, (library) => {
       if (library.favorites[originalName]) delete library.favorites[originalName];
@@ -560,11 +681,11 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('collections:toggle-wallpaper', async (_event, { rootPath, folderPath, collectionId }) => {
-    if (!isInsideRoot(rootPath, folderPath)) throw new Error('壁纸不属于当前目录。');
+    if (!isInsideRoot(rootPath, folderPath)) throw new Error('Invalid operation.');
     const wallpaperId = wallpaperKey(rootPath, path.basename(folderPath));
     return updateCollections((collections) => {
       const collection = collections.find((item) => item.id === collectionId);
-      if (!collection) throw new Error('找不到该收藏夹。');
+      if (!collection) throw new Error('Invalid operation.');
       if (collection.wallpaperIds.includes(wallpaperId)) {
         collection.wallpaperIds = collection.wallpaperIds.filter((id) => id !== wallpaperId);
       } else collection.wallpaperIds.push(wallpaperId);
@@ -576,13 +697,13 @@ app.whenReady().then(() => {
     if (!rootPath || !pathsToAdd.length) return getLibraryData(await getSettings(), rootPath);
     const wallpaperIds = pathsToAdd.map((folderPath) => {
       if (!isInsideRoot(rootPath, folderPath) || path.dirname(folderPath) !== rootPath) {
-        throw new Error('只能添加当前壁纸目录中的壁纸。');
+        throw new Error('Invalid operation.');
       }
       return wallpaperKey(rootPath, path.basename(folderPath));
     });
     return updateCollections((collections) => {
       const collection = collections.find((item) => item.id === collectionId);
-      if (!collection) throw new Error('找不到该收藏夹。');
+      if (!collection) throw new Error('Invalid operation.');
       const existing = new Set(collection.wallpaperIds);
       wallpaperIds.forEach((id) => existing.add(id));
       collection.wallpaperIds = [...existing];
