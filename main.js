@@ -359,7 +359,7 @@ async function showDownloadLinksDialog({ title, message, detail, type = 'info' }
   else if (result.response === 2) shell.openExternal(DOWNLOAD_LINKS.quark);
 }
 
-async function checkFallbackUpdate({ silent = false } = {}) {
+async function checkFallbackUpdate({ silent = false, notifyAvailable = false } = {}) {
   try {
     const response = await fetch(`${FALLBACK_UPDATE_URL}?t=${Date.now()}`, { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -368,7 +368,9 @@ async function checkFallbackUpdate({ silent = false } = {}) {
     if (latestVersion && compareVersions(latestVersion, app.getVersion()) > 0) {
       const status = { state: 'available', version: latestVersion, message: `New version v${latestVersion} is available.` };
       sendUpdateStatus(status);
-      if (!silent) await showDownloadLinksDialog({ title: 'Choose folder', message: status.message, detail: update.notes || 'Choose a download source.' });
+      if (!silent || notifyAvailable) {
+        await showDownloadLinksDialog({ title: 'Update available', message: status.message, detail: update.notes || 'Choose a download source.' });
+      }
       return status;
     }
     const status = { state: 'not-available', message: 'Working...' };
@@ -445,6 +447,20 @@ function setupAutoUpdater() {
     sendUpdateStatus({ state: 'error', message: `Update check failed: ${error.message}` });
     await showDownloadLinksDialog({ type: 'error', title: 'Choose folder', message: 'Working...', detail: error.message });
   });
+}
+
+function scheduleStartupUpdateCheck() {
+  setTimeout(() => {
+    if (!app.isPackaged) {
+      sendUpdateStatus({ state: 'dev', message: 'Update checks are disabled in development mode.' });
+      return;
+    }
+    if (isPortableBuild()) {
+      checkFallbackUpdate({ silent: true, notifyAvailable: true });
+      return;
+    }
+    autoUpdater.checkForUpdates().catch(() => checkFallbackUpdate({ silent: true, notifyAvailable: true }));
+  }, 3000);
 }
 
 app.whenReady().then(() => {
@@ -713,9 +729,7 @@ app.whenReady().then(() => {
   ipcMain.handle('library:open-folder', async (_event, folderPath) => shell.openPath(folderPath));
   createWindow();
   setupAutoUpdater();
-  if (app.isPackaged && !isPortableBuild()) {
-    setTimeout(() => autoUpdater.checkForUpdates().catch(() => checkFallbackUpdate({ silent: true })), 3000);
-  }
+  scheduleStartupUpdateCheck();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 

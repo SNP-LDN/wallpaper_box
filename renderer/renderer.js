@@ -130,6 +130,42 @@ function createSteamProgressDialog() {
   elements.steamProgressBar = dialog.querySelector('#steam-progress-bar');
 }
 
+function createSupportDialog() {
+  const dialog = document.createElement('dialog');
+  dialog.id = 'support-dialog';
+  dialog.innerHTML = `
+    <form method="dialog">
+      <h2>\u2764\ufe0f\u8d5e\u52a9\u4f5c\u8005\u2764\ufe0f</h2>
+      <div class="support-qrcodes">
+        <figure>
+          <img src="../support_me/wechat.png" alt="WeChat \u8d5e\u52a9\u7801" />
+        </figure>
+        <figure>
+          <img src="../support_me/alipay.jpg" alt="Alipay \u8d5e\u52a9\u7801" />
+        </figure>
+        <figure>
+          <img src="../support_me/venmo_qrcode.png" alt="Venmo \u8d5e\u52a9\u7801" />
+        </figure>
+      </div>
+      <div class="dialog-actions">
+        <button class="button primary" value="close">\u5b8c\u6210</button>
+      </div>
+    </form>
+  `;
+  document.body.append(dialog);
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'settings-button support-author-button';
+  button.textContent = '\u2764\ufe0f\u8d5e\u52a9\u4f5c\u8005\u2764\ufe0f';
+  button.onclick = () => dialog.showModal();
+
+  elements.openSettings.after(button);
+
+  elements.supportDialog = dialog;
+  elements.supportAuthor = button;
+}
+
 function showMessage(message) { elements.count.textContent = message; }
 
 function folderLabel(folderPath) {
@@ -675,6 +711,7 @@ elements.form.addEventListener('submit', async (event) => {
 createBulkBar();
 createSteamCheckDialog();
 createSteamProgressDialog();
+createSupportDialog();
 elements.choose.onclick = chooseFolder; elements.emptyChoose.onclick = chooseFolder; elements.refresh.onclick = refresh;
 elements.checkSteamStatus.onclick = openSteamCheckDialog;
 elements.steamCheckForm.onchange = updateSteamCheckSummary;
@@ -757,7 +794,7 @@ function markdownToHtml(markdown) {
 }
 async function openUserGuide() { if (!userGuideLoaded) { elements.guideContent.innerHTML = markdownToHtml(await api.getUserGuide()); userGuideLoaded = true; } elements.userGuideDialog.showModal(); }
 elements.openUserGuide.onclick = openUserGuide;
-[elements.dialog, elements.collectionDialog, elements.manageDialog, elements.settingsDialog, elements.userGuideDialog, elements.steamCheckDialog].forEach((dialog) => {
+[elements.dialog, elements.collectionDialog, elements.manageDialog, elements.settingsDialog, elements.userGuideDialog, elements.steamCheckDialog, elements.supportDialog].forEach((dialog) => {
   dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
 });
 (async () => {
